@@ -2,7 +2,7 @@ import { h, FunctionComponent } from 'preact';
 import { useMemo } from 'preact/hooks';
 import { useIntl, defineMessages } from 'react-intl';
 
-import useTheme from 'hooks/useTheme';
+import { useTheme } from 'hooks/useTheme';
 import { siteId, url } from 'common/settings';
 import { BASE_URL, API_BASE } from 'common/constants';
 import { Dropdown, DropdownItem } from 'components/dropdown';
@@ -54,7 +54,7 @@ export const SubscribeByRSS: FunctionComponent<{ userId: string | null }> = ({ u
       theme={theme}
     >
       {items.map(([href, label]) => (
-        <DropdownItem>
+        <DropdownItem key={label}>
           <a href={href} className="comment-form__rss-dropdown__link" target="_blank" rel="noreferrer">
             {label}
           </a>

@@ -28,7 +28,7 @@ func TestRest_Ping(t *testing.T) {
 }
 
 func TestRest_Preview(t *testing.T) {
-	ts, _, teardown := startupT(t)
+	ts, srv, teardown := startupT(t)
 	defer teardown()
 
 	resp, err := post(t, ts.URL+"/api/v1/preview", `{"text": "test 123", "locator":{"url": "https://radio-t.com/blah1", "site": "radio-t"}}`)
@@ -43,6 +43,44 @@ func TestRest_Preview(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NoError(t, resp.Body.Close())
 	assert.Equal(t, 400, resp.StatusCode)
+
+	resp, err = post(t, ts.URL+"/api/v1/preview", fmt.Sprintf(`{"text": "![non-existent.jpg](%s/api/v1/picture/dev_user/bad_picture)", "locator":{"url": "https://radio-t.com/blah1", "site": "radio-t"}}`, srv.RemarkURL))
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	b, err = ioutil.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
+	assert.Contains(t,
+		string(b),
+		"{\"code\":20,\"details\":\"can't renew staged picture cleanup timer\","+
+			"\"error\":\"can't get image stats for dev_user/bad_picture: stat",
+	)
+	assert.Contains(t,
+		string(b),
+		"/pics-remark42/staging/dev_user/62/bad_picture: no such file or directory\"}\n",
+	)
+
+}
+
+func TestRest_PreviewWithWrongImage(t *testing.T) {
+	ts, srv, teardown := startupT(t)
+	defer teardown()
+
+	resp, err := post(t, ts.URL+"/api/v1/preview", fmt.Sprintf(`{"text": "![non-existent.jpg](%s/api/v1/picture/dev_user/bad_picture)", "locator":{"url": "https://radio-t.com/blah1", "site": "radio-t"}}`, srv.RemarkURL))
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	b, err := ioutil.ReadAll(resp.Body)
+	assert.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
+	assert.Contains(t,
+		string(b),
+		"{\"code\":20,\"details\":\"can't renew staged picture cleanup timer\","+
+			"\"error\":\"can't get image stats for dev_user/bad_picture: stat ",
+	)
+	assert.Contains(t,
+		string(b),
+		"/pics-remark42/staging/dev_user/62/bad_picture: no such file or directory\"}\n",
+	)
 }
 
 func TestRest_PreviewWithMD(t *testing.T) {
@@ -76,6 +114,7 @@ srv, ts := prep(t)
 }
 </pre>`,
 		string(b))
+	assert.NoError(t, resp.Body.Close())
 }
 
 func TestRest_PreviewCode(t *testing.T) {
@@ -97,6 +136,7 @@ BKT
 	assert.NoError(t, err)
 	assert.Equal(t, `<pre class="chroma"><span class="kd">func</span> <span class="nf">main</span><span class="p">(</span><span class="nx">aa</span> <span class="kt">string</span><span class="p">)</span> <span class="kt">int</span> <span class="p">{</span><span class="k">return</span> <span class="mi">0</span><span class="p">}</span>
 </pre>`, string(b))
+	assert.NoError(t, resp.Body.Close())
 }
 
 func TestRest_Find(t *testing.T) {
@@ -232,7 +272,7 @@ func TestRest_FindReadOnly(t *testing.T) {
 }
 
 func TestRest_FindUserView(t *testing.T) {
-	ts, _, teardown := startupT(t)
+	ts, srv, teardown := startupT(t)
 	defer teardown()
 
 	res, code := get(t, ts.URL+"/api/v1/find?site=remark42&url=https://radio-t.com/blah1&view=user")
@@ -265,6 +305,18 @@ func TestRest_FindUserView(t *testing.T) {
 	assert.Equal(t, "dev", comments.Comments[1].User.ID)
 	assert.Equal(t, "", comments.Comments[0].Text)
 	assert.Equal(t, "", comments.Comments[1].Text)
+
+	err = srv.DataService.Delete(store.Locator{SiteID: "remark42", URL: "https://radio-t.com/blah1"}, id1, store.SoftDelete)
+	assert.NoError(t, err)
+	srv.Cache.Flush(cache.FlusherRequest{})
+
+	res, code = get(t, ts.URL+"/api/v1/find?site=remark42&url=https://radio-t.com/blah1&sort=+time&view=user")
+	assert.Equal(t, 200, code)
+	comments = commentsWithInfo{}
+	err = json.Unmarshal([]byte(res), &comments)
+	assert.NoError(t, err)
+	require.Equal(t, 1, len(comments.Comments), "1 comment left")
+	assert.Equal(t, id2, comments.Comments[0].ID)
 }
 
 func TestRest_Last(t *testing.T) {
@@ -538,6 +590,7 @@ func TestRest_Config(t *testing.T) {
 	assert.Equal(t, 10.0, j["readonly_age"])
 	assert.Equal(t, 10000.0, j["max_image_size"])
 	assert.Equal(t, true, j["emoji_enabled"].(bool))
+	assert.Equal(t, false, j["admin_edit"].(bool))
 }
 
 func TestRest_Info(t *testing.T) {

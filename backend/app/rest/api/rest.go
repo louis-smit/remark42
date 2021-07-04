@@ -55,13 +55,14 @@ type Rest struct {
 		Low      int
 		Critical int
 	}
-	UpdateLimiter      float64
-	EmailNotifications bool
-	EmojiEnabled       bool
-	SimpleView         bool
-	ProxyCORS          bool
-	SendJWTHeader      bool
-	AllowedAncestors   []string // sets Content-Security-Policy "frame-ancestors ..."
+	UpdateLimiter       float64
+	EmailNotifications  bool
+	TelegramBotUsername string
+	EmojiEnabled        bool
+	SimpleView          bool
+	ProxyCORS           bool
+	SendJWTHeader       bool
+	AllowedAncestors    []string // sets Content-Security-Policy "frame-ancestors ..."
 
 	SSLConfig   SSLConfig
 	httpsServer *http.Server
@@ -91,31 +92,36 @@ type commentsWithInfo struct {
 }
 
 // Run the lister and request's router, activate rest server
-func (s *Rest) Run(port int) {
+func (s *Rest) Run(address string, port int) {
+
+	if address == "*" {
+		address = ""
+	}
+
 	switch s.SSLConfig.SSLMode {
 	case None:
-		log.Printf("[INFO] activate http rest server on port %d", port)
+		log.Printf("[INFO] activate http rest server on %s:%d", address, port)
 
 		s.lock.Lock()
-		s.httpServer = s.makeHTTPServer(port, s.routes())
+		s.httpServer = s.makeHTTPServer(address, port, s.routes())
 		s.httpServer.ErrorLog = log.ToStdLogger(log.Default(), "WARN")
 		s.lock.Unlock()
 
 		err := s.httpServer.ListenAndServe()
 		log.Printf("[WARN] http server terminated, %s", err)
 	case Static:
-		log.Printf("[INFO] activate https server in 'static' mode on port %d", s.SSLConfig.Port)
+		log.Printf("[INFO] activate https server in 'static' mode on %s:%d", address, s.SSLConfig.Port)
 
 		s.lock.Lock()
-		s.httpsServer = s.makeHTTPSServer(s.SSLConfig.Port, s.routes())
+		s.httpsServer = s.makeHTTPSServer(address, s.SSLConfig.Port, s.routes())
 		s.httpsServer.ErrorLog = log.ToStdLogger(log.Default(), "WARN")
 
-		s.httpServer = s.makeHTTPServer(port, s.httpToHTTPSRouter())
+		s.httpServer = s.makeHTTPServer(address, port, s.httpToHTTPSRouter())
 		s.httpServer.ErrorLog = log.ToStdLogger(log.Default(), "WARN")
 		s.lock.Unlock()
 
 		go func() {
-			log.Printf("[INFO] activate http redirect server on port %d", port)
+			log.Printf("[INFO] activate http redirect server on %s:%d", address, port)
 			err := s.httpServer.ListenAndServe()
 			log.Printf("[WARN] http redirect server terminated, %s", err)
 		}()
@@ -123,14 +129,14 @@ func (s *Rest) Run(port int) {
 		err := s.httpsServer.ListenAndServeTLS(s.SSLConfig.Cert, s.SSLConfig.Key)
 		log.Printf("[WARN] https server terminated, %s", err)
 	case Auto:
-		log.Printf("[INFO] activate https server in 'auto' mode on port %d", s.SSLConfig.Port)
+		log.Printf("[INFO] activate https server in 'auto' mode on %s:%d", address, s.SSLConfig.Port)
 
 		m := s.makeAutocertManager()
 		s.lock.Lock()
-		s.httpsServer = s.makeHTTPSAutocertServer(s.SSLConfig.Port, s.routes(), m)
+		s.httpsServer = s.makeHTTPSAutocertServer(address, s.SSLConfig.Port, s.routes(), m)
 		s.httpsServer.ErrorLog = log.ToStdLogger(log.Default(), "WARN")
 
-		s.httpServer = s.makeHTTPServer(port, s.httpChallengeRouter(m))
+		s.httpServer = s.makeHTTPServer(address, port, s.httpChallengeRouter(m))
 		s.httpServer.ErrorLog = log.ToStdLogger(log.Default(), "WARN")
 
 		s.lock.Unlock()
@@ -170,9 +176,9 @@ func (s *Rest) Shutdown() {
 	s.lock.Unlock()
 }
 
-func (s *Rest) makeHTTPServer(port int, router http.Handler) *http.Server {
+func (s *Rest) makeHTTPServer(address string, port int, router http.Handler) *http.Server {
 	return &http.Server{
-		Addr:              fmt.Sprintf(":%d", port),
+		Addr:              fmt.Sprintf("%s:%d", address, port),
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		// WriteTimeout:      120 * time.Second, // TODO: such a long timeout needed for blocking export (backup) request
@@ -317,6 +323,9 @@ func (s *Rest) routes() chi.Router {
 			rauth.With(rejectAnonUser).Post("/email/subscribe", s.privRest.sendEmailConfirmationCtrl)
 			rauth.With(rejectAnonUser).Post("/email/confirm", s.privRest.setConfirmedEmailCtrl)
 			rauth.With(rejectAnonUser).Delete("/email", s.privRest.deleteEmailCtrl)
+			rauth.With(rejectAnonUser).Post("/telegram/subscribe", s.privRest.sendTelegramConfirmationCtrl)
+			rauth.With(rejectAnonUser).Post("/telegram/confirm", s.privRest.setConfirmedTelegramCtrl)
+			rauth.With(rejectAnonUser).Delete("/telegram", s.privRest.deleteTelegramCtrl)
 		})
 
 		// protected routes, anonymous rejected
@@ -402,38 +411,42 @@ func (s *Rest) configCtrl(w http.ResponseWriter, r *http.Request) {
 	emails, _ := s.DataService.AdminStore.Email(siteID)
 
 	cnf := struct {
-		Version            string   `json:"version"`
-		EditDuration       int      `json:"edit_duration"`
-		MaxCommentSize     int      `json:"max_comment_size"`
-		Admins             []string `json:"admins"`
-		AdminEmail         string   `json:"admin_email"`
-		Auth               []string `json:"auth_providers"`
-		AnonVote           bool     `json:"anon_vote"`
-		LowScore           int      `json:"low_score"`
-		CriticalScore      int      `json:"critical_score"`
-		PositiveScore      bool     `json:"positive_score"`
-		ReadOnlyAge        int      `json:"readonly_age"`
-		MaxImageSize       int      `json:"max_image_size"`
-		EmailNotifications bool     `json:"email_notifications"`
-		EmojiEnabled       bool     `json:"emoji_enabled"`
-		SimpleView         bool     `json:"simple_view"`
-		SendJWTHeader      bool     `json:"send_jwt_header"`
+		Version             string   `json:"version"`
+		EditDuration        int      `json:"edit_duration"`
+		AdminEdit           bool     `json:"admin_edit"`
+		MaxCommentSize      int      `json:"max_comment_size"`
+		Admins              []string `json:"admins"`
+		AdminEmail          string   `json:"admin_email"`
+		Auth                []string `json:"auth_providers"`
+		AnonVote            bool     `json:"anon_vote"`
+		LowScore            int      `json:"low_score"`
+		CriticalScore       int      `json:"critical_score"`
+		PositiveScore       bool     `json:"positive_score"`
+		ReadOnlyAge         int      `json:"readonly_age"`
+		MaxImageSize        int      `json:"max_image_size"`
+		EmailNotifications  bool     `json:"email_notifications"`
+		TelegramBotUsername string   `json:"telegram_bot_username"`
+		EmojiEnabled        bool     `json:"emoji_enabled"`
+		SimpleView          bool     `json:"simple_view"`
+		SendJWTHeader       bool     `json:"send_jwt_header"`
 	}{
-		Version:            s.Version,
-		EditDuration:       int(s.DataService.EditDuration.Seconds()),
-		MaxCommentSize:     s.DataService.MaxCommentSize,
-		Admins:             admins,
-		AdminEmail:         emails,
-		LowScore:           s.ScoreThresholds.Low,
-		CriticalScore:      s.ScoreThresholds.Critical,
-		PositiveScore:      s.DataService.PositiveScore,
-		ReadOnlyAge:        s.ReadOnlyAge,
-		MaxImageSize:       s.ImageService.MaxSize,
-		EmailNotifications: s.EmailNotifications,
-		EmojiEnabled:       s.EmojiEnabled,
-		AnonVote:           s.AnonVote,
-		SimpleView:         s.SimpleView,
-		SendJWTHeader:      s.SendJWTHeader,
+		Version:             s.Version,
+		EditDuration:        int(s.DataService.EditDuration.Seconds()),
+		AdminEdit:           s.DataService.AdminEdits,
+		MaxCommentSize:      s.DataService.MaxCommentSize,
+		Admins:              admins,
+		AdminEmail:          emails,
+		LowScore:            s.ScoreThresholds.Low,
+		CriticalScore:       s.ScoreThresholds.Critical,
+		PositiveScore:       s.DataService.PositiveScore,
+		ReadOnlyAge:         s.ReadOnlyAge,
+		MaxImageSize:        s.ImageService.MaxSize,
+		EmailNotifications:  s.EmailNotifications,
+		TelegramBotUsername: s.TelegramBotUsername,
+		EmojiEnabled:        s.EmojiEnabled,
+		AnonVote:            s.AnonVote,
+		SimpleView:          s.SimpleView,
+		SendJWTHeader:       s.SendJWTHeader,
 	}
 
 	cnf.Auth = []string{}

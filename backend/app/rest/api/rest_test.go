@@ -92,7 +92,7 @@ func TestRest_Shutdown(t *testing.T) {
 	}()
 
 	st := time.Now()
-	srv.Run(0)
+	srv.Run("127.0.0.1", 0)
 	assert.True(t, time.Since(st).Seconds() < 1, "should take about 100ms")
 	<-done
 }
@@ -132,7 +132,7 @@ func TestRest_RunStaticSSLMode(t *testing.T) {
 
 	port := chooseRandomUnusedPort()
 	go func() {
-		srv.Run(port)
+		srv.Run("", port)
 	}()
 
 	waitForHTTPSServerStart(sslPort)
@@ -181,7 +181,7 @@ func TestRest_RunAutocertModeHTTPOnly(t *testing.T) {
 	port := chooseRandomUnusedPort()
 	go func() {
 		// can't check https server locally, just only http server
-		srv.Run(port)
+		srv.Run("", port)
 	}()
 
 	waitForHTTPSServerStart(sslPort)
@@ -324,6 +324,7 @@ func TestRest_cacheControl(t *testing.T) {
 			h.ServeHTTP(w, req)
 			resp := w.Result()
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.NoError(t, resp.Body.Close())
 			t.Logf("%+v", resp.Header)
 			assert.Equal(t, `"`+tt.etag+`"`, resp.Header.Get("Etag"))
 			assert.Equal(t, `max-age=`+strconv.Itoa(int(tt.exp.Seconds()))+", no-cache", resp.Header.Get("Cache-Control"))
@@ -354,6 +355,7 @@ func TestRest_frameAncestors(t *testing.T) {
 			h.ServeHTTP(w, req)
 			resp := w.Result()
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.NoError(t, resp.Body.Close())
 			t.Logf("%+v", resp.Header)
 			assert.Equal(t, tt.header, resp.Header.Get("Content-Security-Policy"))
 
@@ -400,6 +402,8 @@ func startupT(t *testing.T) (ts *httptest.Server, srv *Rest, teardown func()) {
 		RestrictedWordsMatcher: restrictedWordsMatcher,
 	}
 
+	remarkURL := "https://demo.remark42.com"
+
 	srv = &Rest{
 		DataService: dataStore,
 		Authenticator: auth.NewService(auth.Opts{
@@ -409,13 +413,15 @@ func startupT(t *testing.T) (ts *httptest.Server, srv *Rest, teardown func()) {
 		}),
 		Cache:     memCache,
 		WebRoot:   tmp,
-		RemarkURL: "https://demo.remark42.com",
+		RemarkURL: remarkURL,
 		ImageService: image.NewService(&image.FileSystem{
 			Location:   tmp + "/pics-remark42",
 			Partitions: 100,
 			Staging:    tmp + "/pics-remark42/staging",
 		}, image.ServiceParams{
 			EditDuration: 100 * time.Millisecond,
+			ImageAPI:     remarkURL + "/api/v1/picture/",
+			ProxyAPI:     remarkURL + "/api/v1/img",
 			MaxSize:      10000,
 		}),
 		ImageProxy:       &proxy.Image{},

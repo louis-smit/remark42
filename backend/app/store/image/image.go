@@ -12,7 +12,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
-
 	// support gif and jpeg images decoding
 	_ "image/gif"
 	_ "image/jpeg"
@@ -36,8 +35,8 @@ import (
 )
 
 // Service wraps Store with common functions needed for any store implementation
-// It also provides async Submit with func param retrieving all submitting ids.
-// Submitted ids committed (i.e. moved from staging to final) on commitTTL expiration.
+// It also provides async Submit with func param retrieving all submitting IDs.
+// Submitted IDs committed (i.e. moved from staging to final) on ServiceParams.EditDuration expiration.
 type Service struct {
 	ServiceParams
 
@@ -57,12 +56,6 @@ type ServiceParams struct {
 	MaxSize      int
 	MaxHeight    int
 	MaxWidth     int
-
-	// duration of time after which images are checked and committed if still
-	// present in the submitted comment after it's EditDuration is expired
-	commitTTL time.Duration
-	// duration of time after which images are deleted from staging
-	cleanupTTL time.Duration
 }
 
 // StoreInfo contains image store meta information
@@ -82,6 +75,7 @@ type Store interface {
 	Save(id string, img []byte) error // store image with passed id to staging
 	Load(id string) ([]byte, error)   // load image by ID
 
+	ResetCleanupTimer(id string) error                    // resets cleanup timer for the image, called on comment preview
 	Commit(id string) error                               // move image from staging to permanent
 	Cleanup(ctx context.Context, ttl time.Duration) error // run removal loop for old images on staging
 }
@@ -95,10 +89,6 @@ type submitReq struct {
 
 // NewService returns new Service instance
 func NewService(s Store, p ServiceParams) *Service {
-	p.commitTTL = p.EditDuration * 15 / 10  // Commit call on every 1.5 * EditDuration
-	p.cleanupTTL = p.EditDuration * 25 / 10 // Cleanup call on every 2.5 * EditDuration
-	// In case Cleanup and Submit start at the same time (case of stale staging images check
-	// on the program start) these TTL values guarantee that Commit will happen before Cleanup.
 	return &Service{ServiceParams: p, store: s}
 }
 
@@ -127,8 +117,8 @@ func (s *Service) Submit(idsFn func() []string) {
 		go func() {
 			defer s.wg.Done()
 			for req := range s.submitCh {
-				// wait for commitTTL expiration with emergency pass on term
-				for atomic.LoadInt32(&s.term) == 0 && time.Since(req.TS) <= s.commitTTL {
+				// wait for EditDuration expiration with emergency pass on term
+				for atomic.LoadInt32(&s.term) == 0 && time.Since(req.TS) <= s.EditDuration {
 					time.Sleep(time.Millisecond * 10) // small sleep to relive busy wait but keep reactive for term (close)
 				}
 				err := s.SubmitAndCommit(req.idsFn)
@@ -144,15 +134,22 @@ func (s *Service) Submit(idsFn func() []string) {
 
 	atomic.AddInt32(&s.submitCount, 1)
 
+	// reset cleanup timer before submitting the images
+	// to prevent them from being cleaned up while waiting for EditDuration to expire
+	for _, imgID := range idsFn() {
+		_ = s.store.ResetCleanupTimer(imgID)
+	}
+
 	s.submitCh <- submitReq{idsFn: idsFn, TS: time.Now()}
 }
 
 // ExtractPictures gets list of images from the doc html and convert from urls to ids, i.e. user/pic.png
-func (s *Service) ExtractPictures(commentHTML string) (ids []string, err error) {
+func (s *Service) ExtractPictures(commentHTML string) (ids []string) {
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(commentHTML))
 	if err != nil {
-		return nil, errors.Wrap(err, "can't create document")
+		log.Printf("[ERROR] can't parse commentHTML to parse images: %q, error: %v", commentHTML, err)
+		return nil
 	}
 	doc.Find("img").Each(func(i int, sl *goquery.Selection) {
 		if im, ok := sl.Attr("src"); ok {
@@ -181,24 +178,30 @@ func (s *Service) ExtractPictures(commentHTML string) (ids []string, err error) 
 		}
 	})
 
-	return ids, nil
+	return ids
 }
 
-// Cleanup runs periodic cleanup with cleanupTTL. Blocking loop, should be called inside of goroutine by consumer
+// Cleanup runs periodic cleanup with 1.5*ServiceParams.EditDuration. Blocking loop, should be called inside of goroutine by consumer
 func (s *Service) Cleanup(ctx context.Context) {
-	log.Printf("[INFO] start pictures cleanup, staging ttl=%v", s.cleanupTTL)
+	cleanupTTL := s.EditDuration * 15 / 10 // cleanup images older than 1.5 * EditDuration
+	log.Printf("[INFO] start pictures cleanup, staging ttl=%v", cleanupTTL)
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("[INFO] cleanup terminated, %v", ctx.Err())
 			return
-		case <-time.After(s.cleanupTTL):
-			if err := s.store.Cleanup(ctx, s.cleanupTTL); err != nil {
+		case <-time.After(cleanupTTL):
+			if err := s.store.Cleanup(ctx, cleanupTTL); err != nil {
 				log.Printf("[WARN] failed to cleanup, %v", err)
 			}
 		}
 	}
+}
+
+// ResetCleanupTimer resets cleanup timer for the image
+func (s *Service) ResetCleanupTimer(id string) error {
+	return s.store.ResetCleanupTimer(id)
 }
 
 // Info returns meta information about storage

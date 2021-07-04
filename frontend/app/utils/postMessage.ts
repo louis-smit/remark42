@@ -1,22 +1,61 @@
-import { User } from 'common/types';
+import type { Theme, UserInfo } from 'common/types';
 
-export type Message =
-  | { inited: true }
-  | {
-      isUserInfoShown: true;
-      user: User;
-    }
-  | { isUserInfoShown: false }
-  | { scrollTo: number }
-  | { remarkIframeHeight: number };
+type ParentMessage = {
+  inited?: true;
+  scrollTo?: number;
+  height?: number;
+  profile?: UserInfo | null;
+};
+
+type ChildMessage = {
+  clickOutside?: true;
+  hash?: string;
+  title?: string;
+  theme?: Theme;
+};
+
+type AllMessages = ChildMessage & ParentMessage;
 
 /**
  * Sends message to parent window
  *
  * @returns request success of fail
  */
-export default function postMessage(data: Message): boolean {
-  if (!window.parent || window.parent === window) return false;
-  window.parent.postMessage(JSON.stringify(data), '*');
+export function postMessageToParent(data: ParentMessage): boolean {
+  if (!window.parent || window.parent === window) {
+    return false;
+  }
+
+  window.parent.postMessage(data, '*');
   return true;
+}
+
+/**
+ * Sends message to target iframe
+ *
+ * @param target iframe to send data
+ * @param data that will be send to iframe
+ * @returns request success of fail
+ */
+export function postMessageToIframe(target: HTMLIFrameElement, data: ChildMessage): boolean {
+  if (!target?.contentWindow) {
+    return false;
+  }
+
+  target.contentWindow.postMessage(data, '*');
+  return true;
+}
+
+/**
+ * Parses data from post message that was received in iframe
+ *
+ * @param evt post message event
+ * @returns
+ */
+export function parseMessage({ data }: MessageEvent): AllMessages {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return {} as AllMessages;
+  }
+
+  return data as AllMessages;
 }

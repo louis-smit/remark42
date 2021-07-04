@@ -36,6 +36,7 @@ type DataStore struct {
 	TitleExtractor         *TitleExtractor
 	RestrictedWordsMatcher *RestrictedWordsMatcher
 	ImageService           *image.Service
+	AdminEdits             bool // allow admin unlimited edits
 
 	// granular locks
 	scopedLocks struct {
@@ -193,6 +194,39 @@ func (s *DataStore) SetUserEmail(siteID, userID, value string) (string, error) {
 	return "", nil
 }
 
+// GetUserTelegram gets user telegram
+func (s *DataStore) GetUserTelegram(siteID, userID string) (string, error) {
+	res, err := s.Engine.UserDetail(engine.UserDetailRequest{
+		Detail:  engine.UserTelegram,
+		Locator: store.Locator{SiteID: siteID},
+		UserID:  userID,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(res) == 1 {
+		return res[0].Telegram, nil
+	}
+	return "", nil
+}
+
+// SetUserTelegram sets user telegram
+func (s *DataStore) SetUserTelegram(siteID, userID, value string) (string, error) {
+	res, err := s.Engine.UserDetail(engine.UserDetailRequest{
+		Detail:  engine.UserTelegram,
+		Locator: store.Locator{SiteID: siteID},
+		UserID:  userID,
+		Update:  value,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(res) == 1 {
+		return res[0].Telegram, nil
+	}
+	return "", nil
+}
+
 // DeleteUserDetail deletes user detail
 func (s *DataStore) DeleteUserDetail(siteID, userID string, detail engine.UserDetail) error {
 	return s.Engine.Delete(engine.DeleteRequest{
@@ -234,15 +268,11 @@ func (s *DataStore) submitImages(comment store.Comment) {
 			log.Printf("[WARN] can't get comment's %s text for image extraction, %v", comment.ID, err)
 			return nil
 		}
-		imgIds, err := s.ImageService.ExtractPictures(cc.Text)
-		if err != nil {
-			log.Printf("[WARN] can't get extract pictures from %s, %v", comment.ID, err)
-			return nil
+		imgIDs := s.ImageService.ExtractPictures(cc.Text)
+		if len(imgIDs) > 0 {
+			log.Printf("[DEBUG] image ids extracted from %s - %+v", comment.ID, imgIDs)
 		}
-		if len(imgIds) > 0 {
-			log.Printf("[DEBUG] image ids extracted from %s - %+v", comment.ID, imgIds)
-		}
-		return imgIds
+		return imgIDs
 	}
 
 	var err error
@@ -433,22 +463,35 @@ type EditRequest struct {
 	Orig    string
 	Summary string
 	Delete  bool
+	Admin   bool
 }
 
 // EditComment to edit text and update Edit info
 func (s *DataStore) EditComment(locator store.Locator, commentID string, req EditRequest) (comment store.Comment, err error) {
-	comment, err = s.Engine.Get(engine.GetRequest{Locator: locator, CommentID: commentID})
-	if err != nil {
+
+	editAllowed := func(comment store.Comment) error {
+		if req.Admin && s.AdminEdits {
+			return nil
+		}
+
+		// edit allowed in editDuration window only
+		if s.EditDuration > 0 && time.Now().After(comment.Timestamp.Add(s.EditDuration)) {
+			return errors.Errorf("too late to edit %s", commentID)
+		}
+
+		// edit rejected on replayed threads
+		if s.HasReplies(comment) {
+			return errors.Errorf("parent comment with reply can't be edited, %s", commentID)
+		}
+		return nil
+	}
+
+	if comment, err = s.Engine.Get(engine.GetRequest{Locator: locator, CommentID: commentID}); err != nil {
 		return comment, err
 	}
 
-	// edit allowed in editDuration window only
-	if s.EditDuration > 0 && time.Now().After(comment.Timestamp.Add(s.EditDuration)) {
-		return comment, errors.Errorf("too late to edit %s", commentID)
-	}
-
-	if s.HasReplies(comment) {
-		return comment, errors.Errorf("parent comment with reply can't be edited, %s", commentID)
+	if err = editAllowed(comment); err != nil { //nolint gocritic
+		return comment, err
 	}
 
 	if req.Delete { // delete request
@@ -466,10 +509,7 @@ func (s *DataStore) EditComment(locator store.Locator, commentID string, req Edi
 
 	comment.Text = req.Text
 	comment.Orig = req.Orig
-	comment.Edit = &store.Edit{
-		Timestamp: time.Now(),
-		Summary:   req.Summary,
-	}
+	comment.Edit = &store.Edit{Timestamp: time.Now(), Summary: req.Summary}
 	comment.Locator = locator
 	comment.Sanitize()
 

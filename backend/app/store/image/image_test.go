@@ -77,8 +77,7 @@ func TestService_ExtractPictures(t *testing.T) {
 	svc := Service{ServiceParams: ServiceParams{ImageAPI: "/blah/", ProxyAPI: "/non_existent"}}
 	html := `blah <img src="/blah/user1/pic1.png"/> foo
 <img src="/blah/user2/pic3.png"/> xyz <p>123</p> <img src="/pic3.png"/> <img src="https://i.ibb.co/0cqqqnD/ezgif-5-3b07b6b97610.png" alt="">`
-	ids, err := svc.ExtractPictures(html)
-	require.NoError(t, err)
+	ids := svc.ExtractPictures(html)
 	require.Equal(t, 2, len(ids), "two images")
 	assert.Equal(t, "user1/pic1.png", ids[0])
 	assert.Equal(t, "user2/pic3.png", ids[1])
@@ -90,35 +89,30 @@ func TestService_ExtractPictures(t *testing.T) {
 <p><img src="https://remark42.radio-t.com/api/v1/picture/github_ef0f706a79cc24b17bbbb374cd234a691d034128/bjttt8ahajfmrhsula10.png" alt="bjtr0-201906-08110846-i324c.png"/></p>\n\n<p>
 По форме все верно, это все packages, но по сути это все одна библиотека организованная таким образом. При ее импорте, например посредством go mod, она выглядит как один модуль, т.е.
 <code>github.com/go-pkgz/auth v0.5.2</code>.</p>\n`
-	ids, err = svc.ExtractPictures(html)
-	require.NoError(t, err)
+	ids = svc.ExtractPictures(html)
 	require.Equal(t, 1, len(ids), "one image in")
 	assert.Equal(t, "github_ef0f706a79cc24b17bbbb374cd234a691d034128/bjttt8ahajfmrhsula10.png", ids[0])
 
 	// proxied image
 	html = `<img src="https://remark42.radio-t.com/api/v1/img?src=aHR0cHM6Ly9ob21lcGFnZXMuY2FlLndpc2MuZWR1L35lY2U1MzMvaW1hZ2VzL2JvYXQucG5n" alt="cat.png">`
-	ids, err = svc.ExtractPictures(html)
-	require.NoError(t, err)
+	ids = svc.ExtractPictures(html)
 	require.Equal(t, 1, len(ids), "one image in")
 	assert.Equal(t, "cached_images/12318fbd4c55e9d177b8b5ae197bc89c5afd8e07-a41fcb00643f28d700504256ec81cbf2e1aac53e", ids[0])
 
 	// bad url
 	html = `<img src=" https://remark42.radio-t.com/api/v1/img">`
-	ids, err = svc.ExtractPictures(html)
-	require.NoError(t, err)
+	ids = svc.ExtractPictures(html)
 	require.Empty(t, ids)
 
 	// bad src
 	html = `<img src="https://remark42.radio-t.com/api/v1/img?src=bad">`
-	ids, err = svc.ExtractPictures(html)
-	require.NoError(t, err)
+	ids = svc.ExtractPictures(html)
 	require.Empty(t, ids)
 
 	// good src with bad content
 	badURL := base64.URLEncoding.EncodeToString([]byte(" http://foo.bar"))
 	html = fmt.Sprintf(`<img src="https://remark42.radio-t.com/api/v1/img?src=%s">`, badURL)
-	ids, err = svc.ExtractPictures(html)
-	require.NoError(t, err)
+	ids = svc.ExtractPictures(html)
 	require.Empty(t, ids)
 }
 
@@ -127,20 +121,24 @@ func TestService_Cleanup(t *testing.T) {
 	store.On("Cleanup", mock.Anything, mock.Anything).Times(10).Return(nil)
 
 	svc := NewService(&store, ServiceParams{EditDuration: 20 * time.Millisecond})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*549)
+	// cancel context after 2.1 cleanup TTLs
+	ctx, cancel := context.WithTimeout(context.Background(), svc.EditDuration / 100 * 15 * 21)
 	defer cancel()
 	svc.Cleanup(ctx)
-	store.AssertNumberOfCalls(t, "Cleanup", 10)
+	store.AssertNumberOfCalls(t, "Cleanup", 2)
 }
 
 func TestService_Submit(t *testing.T) {
 	store := MockStore{}
 	store.On("Commit", mock.Anything, mock.Anything).Times(7).Return(nil)
+	store.On("ResetCleanupTimer", mock.Anything, mock.Anything).Times(7).Return(nil)
 	svc := NewService(&store, ServiceParams{ImageAPI: "/blah/", EditDuration: time.Millisecond * 100})
 	svc.Submit(func() []string { return []string{"id1", "id2", "id3"} })
+	store.AssertNumberOfCalls(t, "ResetCleanupTimer", 3)
 	err := svc.SubmitAndCommit(func() []string { return []string{"id4", "id5"} })
 	assert.NoError(t, err)
 	svc.Submit(func() []string { return []string{"id6", "id7"} })
+	store.AssertNumberOfCalls(t, "ResetCleanupTimer", 5)
 	svc.Submit(nil)
 	store.AssertNumberOfCalls(t, "Commit", 2)
 	time.Sleep(time.Millisecond * 175)
@@ -151,10 +149,12 @@ func TestService_Submit(t *testing.T) {
 func TestService_Close(t *testing.T) {
 	store := MockStore{}
 	store.On("Commit", mock.Anything, mock.Anything).Times(5).Return(nil)
+	store.On("ResetCleanupTimer", mock.Anything, mock.Anything).Times(5).Return(nil)
 	svc := Service{store: &store, ServiceParams: ServiceParams{ImageAPI: "/blah/", EditDuration: time.Hour * 24}}
 	svc.Submit(func() []string { return []string{"id1", "id2", "id3"} })
 	svc.Submit(func() []string { return []string{"id4", "id5"} })
 	svc.Submit(nil)
+	store.AssertNumberOfCalls(t, "ResetCleanupTimer", 5)
 	svc.Close(context.TODO())
 	store.AssertNumberOfCalls(t, "Commit", 5)
 }
@@ -162,11 +162,13 @@ func TestService_Close(t *testing.T) {
 func TestService_SubmitDelay(t *testing.T) {
 	store := MockStore{}
 	store.On("Commit", mock.Anything, mock.Anything).Times(5).Return(nil)
+	store.On("ResetCleanupTimer", mock.Anything, mock.Anything).Times(5).Return(nil)
 	svc := NewService(&store, ServiceParams{EditDuration: 20 * time.Millisecond})
 	svc.Submit(func() []string { return []string{"id1", "id2", "id3"} })
 	time.Sleep(150 * time.Millisecond) // let first batch to pass TTL
 	svc.Submit(func() []string { return []string{"id4", "id5"} })
 	svc.Submit(nil)
+	store.AssertNumberOfCalls(t, "ResetCleanupTimer", 5)
 	store.AssertNumberOfCalls(t, "Commit", 3)
 	svc.Close(context.TODO())
 	store.AssertNumberOfCalls(t, "Commit", 5)

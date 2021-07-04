@@ -5,7 +5,7 @@ import { fireEvent, render, waitFor } from '@testing-library/preact';
 import { OAuthProvider, User } from 'common/types';
 import { StaticStore } from 'common/static-store';
 
-import Auth from './auth';
+import { Auth } from './auth';
 import * as utils from './auth.utils';
 import * as api from './auth.api';
 import { getProviderData } from './components/oauth.utils';
@@ -14,7 +14,9 @@ jest.mock('react-redux', () => ({
   useDispatch: () => jest.fn(),
 }));
 
-jest.mock('hooks/useTheme', () => () => 'light');
+jest.mock('hooks/useTheme', () => ({
+  useTheme: () => 'light',
+}));
 
 describe('<Auth/>', () => {
   let defaultProviders = StaticStore.config.auth_providers;
@@ -210,5 +212,43 @@ describe('<Auth/>', () => {
     expect(getByRole('presentation')).toHaveClass('spinner');
     expect(getByRole('presentation')).toHaveAttribute('aria-label', 'Loading...');
     await waitFor(() => expect(api.anonymousSignin).toBeCalled());
+  });
+
+  it.each`
+    value           | expected
+    ${'username '}  | ${'username'}
+    ${' username'}  | ${'username'}
+    ${' username '} | ${'username'}
+  `('should remove spaces in the first/last postion in username', async ({ value, expected }) => {
+    StaticStore.config.auth_providers = ['email'];
+
+    const { getByText, getByPlaceholderText } = render(<Auth />);
+    fireEvent.click(getByText('Sign In'));
+
+    const input = getByPlaceholderText('Username');
+
+    fireEvent.change(input, { target: { value } });
+    fireEvent.blur(input);
+
+    expect(input).toHaveValue(expected);
+  });
+
+  it.each`
+    value            | expected
+    ${'user name '}  | ${'user name'}
+    ${' user name'}  | ${'user name'}
+    ${' user name '} | ${'user name'}
+  `('should leave spaces in the middle of username', ({ value, expected }) => {
+    StaticStore.config.auth_providers = ['email'];
+
+    const { getByText, getByPlaceholderText } = render(<Auth />);
+    fireEvent.click(getByText('Sign In'));
+
+    const input = getByPlaceholderText('Username');
+
+    fireEvent.change(input, { target: { value } });
+    fireEvent.blur(input);
+
+    expect(input).toHaveValue(expected);
   });
 });

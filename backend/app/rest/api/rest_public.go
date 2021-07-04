@@ -132,6 +132,16 @@ func (s *public) previewCommentCtrl(w http.ResponseWriter, r *http.Request) {
 
 	comment = s.commentFormatter.Format(comment)
 	comment.Sanitize()
+
+	// check if images are valid
+	for _, id := range s.imageService.ExtractPictures(comment.Text) {
+		err = s.imageService.ResetCleanupTimer(id)
+		if err != nil {
+			rest.SendErrorJSON(w, r, http.StatusBadRequest, err, "can't renew staged picture cleanup timer", rest.ErrImgNotFound)
+			return
+		}
+	}
+
 	render.HTML(w, r, comment.Text)
 }
 
@@ -386,16 +396,20 @@ func (s *public) robotsCtrl(w http.ResponseWriter, r *http.Request) {
 
 func (s *public) applyView(comments []store.Comment, view string) []store.Comment {
 	if strings.EqualFold(view, "user") {
-		projection := make([]store.Comment, len(comments))
-		for i, c := range comments {
+		projection := make([]store.Comment, 0, len(comments))
+		for _, c := range comments {
+			if c.Deleted {
+				continue
+			}
 			p := store.Comment{
 				ID:   c.ID,
 				User: c.User,
 			}
-			projection[i] = p
+			projection = append(projection, p)
 		}
 		return projection
 	}
+
 	return comments
 }
 

@@ -5,19 +5,19 @@ import { getHandleClickProps } from 'common/accessibility';
 import { API_BASE, BASE_URL, COMMENT_NODE_CLASSNAME_PREFIX } from 'common/constants';
 
 import { StaticStore } from 'common/static-store';
-import debounce from 'utils/debounce';
-import copy from 'common/copy';
+import { debounce } from 'utils/debounce';
+import { copy } from 'common/copy';
 import { Theme, BlockTTL, Comment as CommentType, PostInfo, User, CommentMode } from 'common/types';
 import { extractErrorMessageFromResponse, FetcherError } from 'utils/errorUtils';
 import { isUserAnonymous } from 'utils/isUserAnonymous';
 
 import { CommentFormProps } from 'components/comment-form';
-import { AvatarIcon } from 'components/avatar-icon';
+import { Avatar } from 'components/avatar';
 import { Button } from 'components/button';
-import Countdown from 'components/countdown';
+import { Countdown } from 'components/countdown';
 import { getPreview, uploadImage } from 'common/api';
-import postMessage from 'utils/postMessage';
-import { FormattedMessage, useIntl, IntlShape, defineMessages } from 'react-intl';
+import { postMessageToParent } from 'utils/postMessage';
+import { FormattedMessage, IntlShape, defineMessages } from 'react-intl';
 import { getVoteMessage, VoteMessagesTypes } from './getVoteMessage';
 import { getBlockingDurations } from './getBlockingDurations';
 import { boundActions } from './connected-comment';
@@ -85,6 +85,10 @@ const messages = defineMessages({
     id: 'comment.expired-time',
     defaultMessage: 'Editing time has expired.',
   },
+  commentTime: {
+    id: 'comment.time',
+    defaultMessage: '{day} at {time}',
+  },
 });
 
 export type CommentProps = {
@@ -137,7 +141,7 @@ export interface State {
   initial: boolean;
 }
 
-class Comment extends Component<CommentProps, State> {
+export class Comment extends Component<CommentProps, State> {
   votingPromise: Promise<unknown> = Promise.resolve();
   /** comment text node. Used in comment text copying */
   textNode = createRef<HTMLDivElement>();
@@ -207,14 +211,7 @@ class Comment extends Component<CommentProps, State> {
   };
 
   toggleUserInfoVisibility = () => {
-    if (!window.parent) {
-      return;
-    }
-
-    const { user } = this.props.data;
-    const data = JSON.stringify({ isUserInfoShown: true, user });
-
-    window.parent.postMessage(data, '*');
+    postMessageToParent({ profile: this.props.data.user });
   };
 
   togglePin = () => {
@@ -353,27 +350,29 @@ class Comment extends Component<CommentProps, State> {
     this.props.setReplyEditState!({ id: this.props.data.id, state: CommentMode.None });
   };
 
-  scrollToParent = (e: Event) => {
-    const {
-      data: { pid },
-    } = this.props;
-
-    e.preventDefault();
-
+  scrollToParent = (evt: Event) => {
+    const { pid } = this.props.data;
     const parentCommentNode = document.getElementById(`${COMMENT_NODE_CLASSNAME_PREFIX}${pid}`);
 
-    if (parentCommentNode) {
-      const top = parentCommentNode.getBoundingClientRect().top;
-      if (!postMessage({ scrollTo: top })) {
-        parentCommentNode.scrollIntoView();
-      }
+    evt.preventDefault();
+
+    if (!parentCommentNode) {
+      return;
     }
+
+    const top = parentCommentNode.getBoundingClientRect().top;
+
+    if (postMessageToParent({ scrollTo: top })) {
+      return;
+    }
+
+    parentCommentNode.scrollIntoView();
   };
 
   copyComment = () => {
     const username = this.props.data.user.name;
-    const time = this.props.data.time;
-    const text = this.textNode.current!.textContent || '';
+    const time = getLocalDatetime(this.props.intl, new Date(this.props.data.time));
+    const text = this.textNode.current?.textContent || '';
 
     copy(`<b>${username}</b>&nbsp;${time}<br>${text.replace(/\n+/g, '<br>')}`);
 
@@ -507,7 +506,9 @@ class Comment extends Component<CommentProps, State> {
                 <FormattedMessage id="comment.blocking-period" defaultMessage="Blocking period" />
               </option>
               {blockingDurations.map((block) => (
-                <option value={block.value}>{block.label}</option>
+                <option key={block.value} value={block.value}>
+                  {block.label}
+                </option>
               ))}
             </select>
           </span>
@@ -658,10 +659,7 @@ class Comment extends Component<CommentProps, State> {
           </div>
         )}
         <div className="comment__info">
-          {props.view !== 'user' && !props.collapsed && (
-            <AvatarIcon mix="comment__avatar" theme={this.props.theme} picture={o.user.picture} />
-          )}
-
+          {props.view !== 'user' && !props.collapsed && <Avatar className="comment__avatar" url={o.user.picture} />}
           {props.view !== 'user' && (
             <span
               {...getHandleClickProps(this.toggleUserInfoVisibility)}
@@ -693,7 +691,7 @@ class Comment extends Component<CommentProps, State> {
           )}
 
           <a href={`${o.locator.url}#${COMMENT_NODE_CLASSNAME_PREFIX}${o.id}`} className="comment__time">
-            <FormatTime time={o.time} />
+            {getLocalDatetime(this.props.intl, o.time)}
           </a>
 
           {!!props.level && props.level > 0 && props.view === 'main' && (
@@ -791,6 +789,7 @@ class Comment extends Component<CommentProps, State> {
                 (editable || isEditing) &&
                 props.view === 'main' && [
                   <Button
+                    key="edit-button"
                     kind="link"
                     {...getHandleClickProps(this.toggleEditing)}
                     mix={['comment__action', 'comment__action_type_edit']}
@@ -803,6 +802,7 @@ class Comment extends Component<CommentProps, State> {
                   </Button>,
                   !isAdmin && (
                     <Button
+                      key="delete-button"
                       kind="link"
                       {...getHandleClickProps(this.deleteComment)}
                       mix={['comment__action', 'comment__action_type_delete']}
@@ -812,6 +812,7 @@ class Comment extends Component<CommentProps, State> {
                   ),
                   state.editDeadline && (
                     <Countdown
+                      key="countdown"
                       className="comment__edit-timer"
                       time={state.editDeadline}
                       onTimePassed={() =>
@@ -879,19 +880,9 @@ function getTextSnippet(html: string) {
   return snippet.length === LENGTH && result.length !== LENGTH ? `${snippet}...` : snippet;
 }
 
-function FormatTime({ time }: { time: Date }) {
-  const intl = useIntl();
-
-  return (
-    <FormattedMessage
-      id="comment.time"
-      defaultMessage="{day} at {time}"
-      values={{
-        day: intl.formatDate(time),
-        time: intl.formatTime(time),
-      }}
-    />
-  );
+function getLocalDatetime(intl: IntlShape, date: Date) {
+  return intl.formatMessage(messages.commentTime, {
+    day: intl.formatDate(date),
+    time: intl.formatTime(date),
+  });
 }
-
-export default Comment;

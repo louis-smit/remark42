@@ -1,26 +1,27 @@
-import { h, FunctionComponent, JSX } from 'preact';
+import { h, JSX } from 'preact';
 import { useDispatch } from 'react-redux';
-import cn from 'classnames';
+import clsx from 'clsx';
 import { useIntl } from 'react-intl';
 
-import { siteId } from 'common/settings';
 import type { OAuthProvider } from 'common/types';
-import useTheme from 'hooks/useTheme';
+import { siteId } from 'common/settings';
+import { useTheme } from 'hooks/useTheme';
 import { setUser } from 'store/user/actions';
 
-import messages from 'components/auth/auth.messsages';
+import { messages } from 'components/auth/auth.messsages';
 
-import { getButtonVariant, getProviderData } from './oauth.utils';
 import { oauthSignin } from './oauth.api';
+import { BASE_URL } from 'common/constants.config';
+import { getButtonVariant, getProviderData } from './oauth.utils';
 import styles from './oauth.module.css';
-
-export type OAuthProvidersProps = {
-  providers: OAuthProvider[];
-};
 
 const location = encodeURIComponent(`${window.location.origin}${window.location.pathname}?selfClose`);
 
-const OAuthProviders: FunctionComponent<OAuthProvidersProps> = ({ providers }) => {
+type Props = {
+  providers: OAuthProvider[];
+};
+
+export function OAuth({ providers }: Props) {
   const intl = useIntl();
   const dispath = useDispatch();
   const theme = useTheme();
@@ -39,18 +40,18 @@ const OAuthProviders: FunctionComponent<OAuthProvidersProps> = ({ providers }) =
   };
 
   return (
-    <ul className={cn('oauth', styles.root)}>
+    <ul className={clsx('oauth', styles.root)}>
       {providers.map((p) => {
         const { name, icon } = getProviderData(p, theme);
 
         return (
-          <li className={cn('oauth-item', styles.item)}>
+          <li key={name} className={clsx('oauth-item', styles.item)}>
             <a
               target="_blank"
               rel="noopener noreferrer"
-              href={`/auth/${p}/login?from=${location}&site=${siteId}`}
+              href={`${BASE_URL}/auth/${p}/login?from=${location}&site=${siteId}`}
               onClick={handleOathClick}
-              className={cn('oauth-button', styles.button, styles[buttonVariant], styles[p])}
+              className={clsx('oauth-button', styles.button, styles[buttonVariant], styles[p])}
               data-provider-name={name}
               title={intl.formatMessage(messages.oauthTitle, { provider: name })}
             >
@@ -61,6 +62,4 @@ const OAuthProviders: FunctionComponent<OAuthProvidersProps> = ({ providers }) =
       })}
     </ul>
   );
-};
-
-export default OAuthProviders;
+}

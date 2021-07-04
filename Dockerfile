@@ -1,4 +1,4 @@
-FROM umputun/baseimage:buildgo-v1.6.1 as build-backend
+FROM umputun/baseimage:buildgo-v1.7.0 as build-backend
 
 ARG CI
 ARG DRONE
@@ -58,7 +58,7 @@ RUN cd /srv/frontend && \
     else echo "skip frontend tests and lint" ; npm run build ; fi && \
     rm -rf ./node_modules
 
-FROM umputun/baseimage:app-v1.6.1
+FROM umputun/baseimage:app-v1.7.0
 
 WORKDIR /srv
 
@@ -71,12 +71,12 @@ RUN chmod +x /entrypoint.sh /usr/local/bin/backup /usr/local/bin/restore /usr/lo
 COPY --from=build-backend /build/backend/remark42 /srv/remark42
 COPY --from=build-backend /build/backend/templates /srv
 COPY --from=build-frontend /srv/frontend/public/ /srv/web
+COPY docker-init.sh /srv/init.sh
 RUN chown -R app:app /srv
 RUN ln -s /srv/remark42 /usr/bin/remark42
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s CMD curl --fail http://localhost:8080/ping || exit 1
 
-COPY docker-init.sh /srv/init.sh
 RUN chmod +x /srv/init.sh
 CMD ["/srv/remark42", "server"]

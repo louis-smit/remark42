@@ -18,7 +18,7 @@ Remark42 is a self-hosted, lightweight, and simple (yet functional) comment engi
 * Extractor for recent comments, cross-post
 * RSS for all comments and each post
 * Telegram, Slack and email notifications for Admins (get notified for each new comment)
-* Email notifications for users (get notified when someone responds to your comment)
+* Email and Telegram notifications for users (get notified when someone responds to your comment)
 * Export data to json with automatic backups
 * No external databases, everything embedded in a single data file
 * Fully dockerized and can be deployed in a single command
@@ -106,7 +106,7 @@ _this is the recommended way to run remark42_
 | Command line            | Environment             | Default                  | Description                                     |
 | ----------------------- | ----------------------- | ------------------------ | ----------------------------------------------- |
 | url                     | REMARK_URL              |                          | url to remark42 server, _required_              |
-| secret                  | SECRET                  |                          | secret key, _required_                          |
+| secret                  | SECRET                  |                          | shared secret key used to sign JWT, should be a random, long, hard-to-guess string, _required_ |
 | site                    | SITE                    | `remark`                 | site name(s), _multi_                           |
 | store.type              | STORE_TYPE              | `bolt`                   | type of storage, `bolt` or `rpc`                |
 | store.bolt.path         | STORE_BOLT_PATH         | `./var`                  | path to data directory                          |
@@ -156,16 +156,16 @@ _this is the recommended way to run remark42_
 | auth.email.subj         | AUTH_EMAIL_SUBJ         | `remark42 confirmation`  | email subject                                   |
 | auth.email.content-type | AUTH_EMAIL_CONTENT_TYPE | `text/html`              | email content type                              |
 | auth.email.template     | AUTH_EMAIL_TEMPLATE     | none (predefined)        | custom email message template file              |
-| notify.type             | NOTIFY_TYPE             | none                     | type of notification (telegram, slack and/or email) |
+| notify.users            | NOTIFY_USERS            | none                     | type of user notifications (telegram, email)    |
+| notify.admins           | NOTIFY_ADMINS           | none                     | type of admin notifications (telegram, slack and/or email) |
 | notify.queue            | NOTIFY_QUEUE            | `100`                    | size of notification queue                      |
-| notify.telegram.token   | NOTIFY_TELEGRAM_TOKEN   |                          | telegram token                                  |
 | notify.telegram.chan    | NOTIFY_TELEGRAM_CHAN    |                          | telegram channel                                |
-| notify.telegram.timeout | NOTIFY_TELEGRAM_TIMEOUT | `5s`                     | telegram timeout                                |
 | notify.slack.token      | NOTIFY_SLACK_TOKEN      |                          | slack token                                     |
 | notify.slack.chan       | NOTIFY_SLACK_CHAN       | `general`                | slack channel                                   |
 | notify.email.fromAddress | NOTIFY_EMAIL_FROM      |                          | from email address                              |
 | notify.email.verification_subj | NOTIFY_EMAIL_VERIFICATION_SUBJ | `Email verification` | verification message subject          |
-| notify.email.notify_admin | NOTIFY_EMAIL_ADMIN    | `false`                  | notify admin on new comments via ADMIN_SHARED_EMAIL |
+| telegram.token          | TELEGRAM_TOKEN          |                          | telegram token (used for auth and telegram notifications) |
+| telegram.timeout        | TELEGRAM_TIMEOUT        | `5s`                     | telegram connection timeout                     |
 | smtp.host               | SMTP_HOST               |                          | SMTP host                                       |
 | smtp.port               | SMTP_PORT               |                          | SMTP port                                       |
 | smtp.username           | SMTP_USERNAME           |                          | SMTP user name                                  |
@@ -189,6 +189,7 @@ _this is the recommended way to run remark42_
 | restricted-words        | RESTRICTED_WORDS        |                          | words banned in comments (can use `*`), _multi_ |
 | restricted-names        | RESTRICTED_NAMES        |                          | names prohibited to use by the user, _multi_    |
 | edit-time               | EDIT_TIME               | `5m`                     | edit window                                     |
+| admin-edit              | ADMIN_EDIT              | `false`                  | unlimited edit for admins                       |
 | read-age                | READONLY_AGE            |                          | read-only age of comments, days                 |
 | image-proxy.http2https  |  IMAGE_PROXY_HTTP2HTTPS | `false`                  | enable http->https proxy for images             |
 | image-proxy.cache-external | IMAGE_PROXY_CACHE_EXTERNAL | `false`            | enable caching external images to current image storage |
@@ -196,6 +197,7 @@ _this is the recommended way to run remark42_
 | simple-view             | SIMPLE_VIEW             | `false`                  | minimized UI with basic info only               |
 | proxy-cors              | PROXY_CORS              | `false`                  | disable internal CORS and delegate it to proxy  |
 | allowed-hosts           | ALLOWED_HOSTS           |  enable all              | limit hosts/sources allowed to embed comments   |
+| address                 | REMARK_ADDRESS          |  all interfaces          | web server listening address                    |
 | port                    | REMARK_PORT             | `8080`                   | web server port                                 |
 | web-root                | REMARK_WEB_ROOT         | `./web`                  | web server root directory                       |
 | update-limit            | UPDATE_LIMIT            | `0.5`                    | updates/sec limit                               |
@@ -224,6 +226,10 @@ trouble with unrecognized command-line options in the future.
 | auth.email.tls     | smtp.tls      | AUTH_EMAIL_TLS     | SMTP_TLS      | `false` | enable TLS     | 1.5.0               |
 | auth.email.timeout | smtp.timeout  | AUTH_EMAIL_TIMEOUT | SMTP_TIMEOUT  | `10s`   | smtp timeout   | 1.5.0               |
 | img-proxy          | image-proxy.http2https | IMG_PROXY | IMAGE_PROXY_HTTP2HTTPS | `false` | enable http->https proxy for images | 1.5.0 |
+| notify.type        | notify.users, notify.admins | NOTIFY_TYPE       | NOTIFY_ADMINS, NOTIFY_USERS | 1.9.0               |
+| notify.email.notify_admin| notify.admins=email | NOTIFY_EMAIL_ADMIN          | NOTIFY_ADMINS=email | 1.9.0               |
+| notify.telegram.token | telegram.token | NOTIFY_TELEGRAM_TOKEN | TELEGRAM_TOKEN   | telegram token | 1.9.0               |
+| notify.telegram.timeout | telegram.timeout | NOTIFY_TELEGRAM_TIMEOUT | TELEGRAM_TIMEOUT | telegram timeout | 1.9.0       |
 </details>
 
 ##### Required parameters
@@ -336,19 +342,19 @@ Optionally, anonymous access can be turned on. In this case an extra `anonymous`
 ### Importing comments
 
 Remark supports importing comments from Disqus, WordPress or native backup format.
-All imported comments has `Imported` field set to `true`.
+All imported comments have an `Imported` field set to `true`.
 
-#### Initial import from Disqus
+## Initial import from Disqus
 
-1.  Disqus provides an export of all comments on your site in a g-zipped file. This is found in your Moderation panel at Disqus Admin > Setup > Export. The export will be sent into a queue and then emailed to the address associated with your account once it's ready. Direct link to export will be something like `https://<siteud>.disqus.com/admin/discussions/export/`. See [importing-exporting](https://help.disqus.com/customer/portal/articles/1104797-importing-exporting) for more details.
-2.  Move this file to your remark42 host within `./var` and unzip, i.e. `gunzip <disqus-export-name>.xml.gz`.
+1.  Disqus provides export of all comments on your site in a gzipped file. This option is available in your Moderation panel at Disqus Admin > Setup > Export. The export will be sent into a queue and then emailed to the address associated with your account once it's ready. Direct link to export will be something like `https://<siteud>.disqus.com/admin/discussions/export/`. See [importing-exporting](https://help.disqus.com/customer/portal/articles/1104797-importing-exporting) for more details.
+2.  Move this file to your remark42 host within `./var` and extract, i.e. `gunzip <disqus-export-name>.xml.gz`.
 3.  Run import command - `docker exec -it remark42 import -p disqus -f /srv/var/{disqus-export-name}.xml -s {your site id}`
 
-#### Initial import from WordPress
+## Initial import from WordPress
 
-1. Install WordPress [plugin](https://wordpress.org/plugins/wp-exporter/) to export comments and follow it instructions. The plugin should produce a xml-based file with site content including comments.
+1. Use [that instruction](https://wordpress.com/support/export/) to export comments to file using standard WordPress functionality.
 2. Move this file to your remark42 host within `./var`
-3. Run import command - `docker exec -it remark42 import -p wordpress -f {wordpress-export-name}.xml -s {your site id}`
+3. Run import command - `docker exec -it remark42 import -p wordpress -f /srv/var/{wordpress-export-name}.xml -s {your site id}`
 
 #### Backup and restore
 
@@ -463,10 +469,12 @@ Add this snippet to the bottom of web page:
     theme: 'dark', // optional param; if it isn't defined default value ('light') will be used
     page_title: 'Moving to Remark42', // optional param; if it isn't defined `document.title` will be used
     locale: 'en', // set up locale and language, if it isn't defined default value ('en') will be used
-    show_email_subscription: false // optional param; by default it is `true` and you can see email subscription feature
-                                   // in interface when enable it from backend side
-                                   // if you set this param in `false` you will get notifications email notifications as admin
-                                   // but your users won't have interface for subscription
+    show_email_subscription: false, // optional param; by default it is `true` and you can see email subscription feature
+                                    // in interface when enable it from backend side
+                                    // if you set this param in `false` you will get notifications email notifications as admin
+                                    // but your users won't have interface for subscription
+    simple_view: false // optional param; overrides the parameter from the backend
+                       // minimized UI with basic info only
   };
 </script>
 <script>!function(e,n){for(var o=0;o<e.length;o++){var r=n.createElement("script"),c=".js",d=n.head||n.body;"noModule"in r?(r.type="module",c=".mjs"):r.async=!0,r.defer=!0,r.src=remark_config.host+"/web/"+e[o]+c,d.appendChild(r)}}(remark_config.components||["embed"],document);</script>
@@ -480,7 +488,7 @@ And then add this node in the place where you want to see Remark42 widget:
 
 After that widget will be rendered inside this node.
 
-If you want to set this up on a Single Page App, see [appropriate doc page](https://remark42.com/docs/latest/spa/).
+If you want to set this up on a Single Page App, see [appropriate doc page](https://github.com/umputun/remark42/blob/master/docs/spa.md).
 
 ##### Themes
 
@@ -621,7 +629,7 @@ communicating with demo server backend running on `https://demo.remark42.com`.
 But you will not be able to login with any oauth providers due to security reasons.
 
 You can attach to locally running backend by providing `REMARK_URL` environment variable.
-```sh
+```shell
 npx cross-env REMARK_URL=http://127.0.0.1:8080 npm start
 ```
 
@@ -629,7 +637,7 @@ npx cross-env REMARK_URL=http://127.0.0.1:8080 npm start
 to `./frontend` folder and rewrite variables as you wish. For such functional we use `dotenv`
 
 The best way for start local developer environment:
-```sh
+```shell
 cp compose-dev-frontend.yml compose-private-frontend.yml
 docker-compose -f compose-private-frontend.yml up --build
 cd frontend
@@ -894,3 +902,8 @@ _all admin calls require auth and admin privilege_
 * Images can be proxied (`IMAGE_PROXY_HTTP2HTTPS=true`) to prevent mixed http/https.
 * All images can be proxied and saved (`IMAGE_PROXY_CACHE_EXTERNAL=true`) instead of serving from original location. Beware, images which are posted with this parameter enabled will be served from proxy even after it will be disabled.
 * Docker build uses [publicly available](https://github.com/umputun/baseimage) base images.
+
+## Related projects
+
+- [A Helm chart for Remark42 on Kubernetes](https://github.com/groundhog2k/helm-charts/tree/master/charts/remark42)
+- [django-remark42](https://github.com/andrewp-as-is/django-remark42.py)

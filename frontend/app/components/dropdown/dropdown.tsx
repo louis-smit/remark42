@@ -4,6 +4,7 @@ import b from 'bem-react-helper';
 import { Theme } from 'common/types';
 import { sleep } from 'utils/sleep';
 import { Button } from 'components/button';
+import { parseMessage } from 'utils/postMessage';
 
 type Props = RenderableProps<{
   title: string;
@@ -133,23 +134,23 @@ export class Dropdown extends Component<Props, State> {
     });
   }
 
-  receiveMessage(e: { data: string | object }) {
-    try {
-      const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+  receiveMessage(evt: MessageEvent) {
+    const data = parseMessage(evt);
 
-      if (!data.clickOutside) return;
-      if (!this.state.isActive) return;
-      this.setState(
-        {
-          contentTranslateX: 0,
-          isActive: false,
-        },
-        () => {
-          this.__onClose();
-          this.props.onClose && this.props.onClose(this.rootNode.current!);
-        }
-      );
-    } catch (e) {}
+    if (!data.clickOutside || !this.state.isActive) {
+      return;
+    }
+
+    this.setState(
+      {
+        contentTranslateX: 0,
+        isActive: false,
+      },
+      () => {
+        this.__onClose();
+        this.props.onClose?.(this.rootNode.current!);
+      }
+    );
   }
 
   onOutsideClick(e: MouseEvent) {
@@ -168,13 +169,11 @@ export class Dropdown extends Component<Props, State> {
 
   componentDidMount() {
     document.addEventListener('click', this.onOutsideClick);
-
     window.addEventListener('message', this.receiveMessage);
   }
 
   componentWillUnmount() {
     document.removeEventListener('click', this.onOutsideClick);
-
     window.removeEventListener('message', this.receiveMessage);
   }
 

@@ -41,8 +41,9 @@ services:
             - ADMIN_PASSWD=password
             - AUTH_DEV=true # activate local oauth "dev"
             - ADMIN_SHARED_ID=dev_user # set admin flag for default user on local ouath2
-            - NOTIFY_TYPE
-            - NOTIFY_TELEGRAM_TOKEN
+            - NOTIFY_USERS
+            - NOTIFY_ADMINS
+            - TELEGRAM_TOKEN
             - NOTIFY_TELEGRAM_CHAN
             - NOTIFY_EMAIL_FROM
             - ADMIN_SHARED_EMAIL

@@ -1,8 +1,9 @@
 import { h, Component, FunctionComponent, Fragment } from 'preact';
+import { useEffect, useRef } from 'preact/hooks';
 import { useSelector } from 'react-redux';
 import b from 'bem-react-helper';
 import { IntlShape, useIntl, FormattedMessage, defineMessages } from 'react-intl';
-import classnames from 'classnames';
+import clsx from 'clsx';
 
 import type { Sorting } from 'common/types';
 import type { StoreState } from 'store';
@@ -29,20 +30,22 @@ import { fetchComments, updateSorting, addComment, updateComment, unsetCommentMo
 import { setCommentsReadOnlyState } from 'store/post-info/actions';
 import { setTheme } from 'store/theme/actions';
 
-import { Button } from 'components/button';
-import Preloader from 'components/preloader';
-import Settings from 'components/settings';
-import AuthPanel from 'components/auth-panel';
+import { Preloader } from 'components/preloader';
+import { Settings } from 'components/settings';
+import { AuthPanel } from 'components/auth-panel';
 import { CommentForm } from 'components/comment-form';
 import { Thread } from 'components/thread';
 import { ConnectedComment as Comment } from 'components/comment/connected-comment';
 import { uploadImage, getPreview } from 'common/api';
 import { isUserAnonymous } from 'utils/isUserAnonymous';
 import { bindActions } from 'utils/actionBinder';
-import postMessage from 'utils/postMessage';
+import { postMessageToParent, parseMessage } from 'utils/postMessage';
 import { useActions } from 'hooks/useAction';
 import { setCollapse } from 'store/thread/actions';
 import { logout } from 'components/auth/auth.api';
+import { Button } from 'components/auth/components/button';
+
+import styles from './root.module.css';
 
 const mapStateToProps = (state: StoreState) => ({
   sort: state.comments.sort,
@@ -100,22 +103,13 @@ const messages = defineMessages({
   },
 });
 
-const getCollapsedParents = (
-  hash: string,
-  childToParentComments: Record<string, string>,
-  collapsedThreads: Record<string, boolean>
-) => {
-  const collapsedParents = [];
+const getCollapsedParent = (hash: string, childToParentComments: Record<string, string>) => {
   let id = hash.replace(`#${COMMENT_NODE_CLASSNAME_PREFIX}`, '');
-
   while (childToParentComments[id]) {
     id = childToParentComments[id];
-    if (collapsedThreads[id]) {
-      collapsedParents.push(id);
-    }
   }
 
-  return collapsedParents;
+  return id;
 };
 
 /** main component fr main comments widget */
@@ -127,11 +121,11 @@ export class Root extends Component<Props, State> {
     isSettingsVisible: false,
   };
 
-  componentWillMount() {
+  componentDidMount() {
     const userloading = this.props.fetchUser().finally(() => this.setState({ isUserLoading: false }));
 
     Promise.all([userloading, this.props.fetchComments()]).finally(() => {
-      postMessage({ remarkIframeHeight: document.body.offsetHeight });
+      postMessageToParent({ height: document.body.offsetHeight });
       setTimeout(this.checkUrlHash);
       window.addEventListener('hashchange', this.checkUrlHash);
     });
@@ -160,34 +154,40 @@ export class Root extends Component<Props, State> {
       if (e) e.preventDefault();
 
       if (!document.querySelector(hash)) {
-        const ids = getCollapsedParents(hash, this.props.childToParentComments, this.props.collapsedThreads);
-        ids.forEach((id) => this.props.setCollapse(id, false));
+        const id = getCollapsedParent(hash, this.props.childToParentComments);
+        const indexHash = this.props.topComments.findIndex((item) => item === id);
+        const multiplierCollapsed = Math.ceil(indexHash / MAX_SHOWN_ROOT_COMMENTS);
+        this.setState(
+          {
+            commentsShown: this.state.commentsShown + MAX_SHOWN_ROOT_COMMENTS * multiplierCollapsed,
+          },
+          () => setTimeout(() => this.toMessage(hash), 500)
+        );
+      } else {
+        this.toMessage(hash);
       }
-
-      setTimeout(() => {
-        const comment = document.querySelector(hash);
-        if (comment) {
-          postMessage({ scrollTo: comment.getBoundingClientRect().top });
-          comment.classList.add('comment_highlighting');
-          setTimeout(() => {
-            comment.classList.remove('comment_highlighting');
-          }, 5e3);
-        }
-      }, 500);
     }
   };
 
-  onMessage(event: { data: string | object }) {
-    if (!event.data) {
+  toMessage = (hash: string) => {
+    const comment = document.querySelector(hash);
+    if (comment) {
+      postMessageToParent({ scrollTo: comment.getBoundingClientRect().top });
+      comment.classList.add('comment_highlighting');
+      setTimeout(() => {
+        comment.classList.remove('comment_highlighting');
+      }, 5e3);
+    }
+  };
+
+  onMessage(event: MessageEvent) {
+    const data = parseMessage(event);
+
+    if (!data.theme || !THEMES.includes(data.theme)) {
       return;
     }
 
-    try {
-      const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      if (data.theme && THEMES.includes(data.theme)) {
-        this.props.setTheme(data.theme);
-      }
-    } catch (e) {}
+    this.props.setTheme(data.theme);
   }
 
   onBlockedUsersShow = async () => {
@@ -306,7 +306,7 @@ export class Root extends Component<Props, State> {
                   ))}
 
                   {commentsShown < this.props.topComments.length && IS_MOBILE && (
-                    <Button kind="primary" size="middle" mix="root__show-more" onClick={this.showMore}>
+                    <Button className={clsx('more-comments', styles.moreComments)} onClick={this.showMore}>
                       <FormattedMessage id="root.show-more" defaultMessage="Show more" />
                     </Button>
                   )}
@@ -337,9 +337,21 @@ export const ConnectedRoot: FunctionComponent = () => {
   const props = useSelector(mapStateToProps);
   const actions = useActions(boundActions);
   const intl = useIntl();
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // TODO: throttle updates
+    const observer = new MutationObserver(() => {
+      postMessageToParent({ height: document.body.offsetHeight });
+    });
+
+    observer.observe(rootRef.current, { attributes: true, childList: true, subtree: true });
+
+    return () => observer.disconnect();
+  }, []);
 
   return (
-    <div className={classnames(b('root', {}, { theme: props.theme }), props.theme)}>
+    <div className={clsx(b('root', {}, { theme: props.theme }), props.theme)} ref={rootRef}>
       <Root {...props} {...actions} intl={intl} />
       <p className="root__copyright" role="contentinfo">
         <FormattedMessage

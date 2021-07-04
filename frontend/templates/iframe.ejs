@@ -127,22 +127,11 @@
     </script>
     <% } %>
     <script>
-      // TODO: we must stop using `setInterval` for resize iframe
-      // TODO: we must use more efficient way to change iframe height
-      // TODO: we must open comments widget and user-info widget on different pages (now iframe.html opens both of widgets)
-      var lastHeight = 0;
-      setInterval(function () {
-        if (document.body.offsetHeight !== lastHeight && document.body.offsetHeight > 22) {
-          lastHeight = document.body.offsetHeight;
-          window.parent.postMessage(JSON.stringify({ remarkIframeHeight: lastHeight }), '*');
-        }
-      }, 200);
-
-      window.addEventListener('message', receiveMessages);
-
-      function receiveMessages(event) {
+      window.addEventListener('message', function receiveMessages(event) {
         try {
-          const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+          const data = event.data;
+          const isObj = typeof data === 'object' && data !== null && !Array.isArray(data);
+          if (!isObj) return;
           const isItHash = data.hash && data.hash.indexOf('#') === 0;
 
           if (isItHash) {
@@ -153,7 +142,7 @@
             document.title = data.title;
           }
         } catch (e) {}
-      }
+      });
 
       var remark_config =
         window.location.search.length < 2
@@ -170,14 +159,15 @@
                 return c;
               }, {});
 
-      window.parent.postMessage(JSON.stringify({ inited: true }), '*');
+      window.parent.postMessage({ inited: true }, '*');
     </script>
     <script>
       (function (d) {
-        const r = d.head || d.body;
-        const s = document.createElement('script');
-
-        s.src = 'noModule' in s ? 'remark.mjs' : 'remark.js';
+        var r = d.head || d.body;
+        var s = d.createElement('script');
+        var m = 'noModule' in s;
+        s.src = 'remark' + (m ? '.mjs' : '.js');
+        m && (s.type = 'module');
         s.async = true;
         s.defer = true;
         r.appendChild(s);

@@ -4,7 +4,7 @@ jest.mock('./settings', () => ({
 
 import { RequestError } from 'utils/errorUtils';
 import { API_BASE, BASE_URL } from './constants.config';
-import { apiFetcher, authFetcher, adminFetcher, JWT_HEADER, XSRF_HEADER } from './fetcher';
+import { apiFetcher, authFetcher, adminFetcher, JWT_HEADER } from './fetcher';
 
 type FetchImplementaitonProps = {
   status?: number;
@@ -31,7 +31,7 @@ function mockFetch({ headers = {}, data = {}, ...props }: FetchImplementaitonPro
 }
 
 describe('fetcher', () => {
-  const headers = { [XSRF_HEADER]: '' };
+  const headers = {};
   const apiUri = '/anything';
   const apiUrl = `${BASE_URL}${API_BASE}/anything?site=remark`;
 
@@ -108,14 +108,11 @@ describe('fetcher', () => {
 
       // Check if `activeJwtToken` saved and clean
       mockFetch({ headers, status: 401 });
-      await apiFetcher
-        .get(apiUri)
-        .then(() => {
+      await expect(
+        apiFetcher.get(apiUri).then(() => {
           throw Error('apiFether shoud throw error on 401 responce');
         })
-        .catch((e) => {
-          expect(e.message).toBe('Not authorized.');
-        });
+      ).rejects.toEqual(new Error('Not authorized.'));
 
       expect(window.fetch).toHaveBeenCalledWith(apiUrl, {
         method: 'get',

@@ -1,5 +1,6 @@
 import type { UserInfo, Theme } from 'common/types';
 import { BASE_URL, NODE_ID, COMMENT_NODE_CLASSNAME_PREFIX } from 'common/constants.config';
+import { parseMessage, postMessageToIframe } from 'utils/postMessage';
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
@@ -199,9 +200,7 @@ function createInstance(config: typeof window.remark_config) {
         this.closeEl.innerHTML = '&#10006;';
         this.closeEl.onclick = () => this.close();
       }
-      const queryUserInfo = `${query}&page=user-info&&id=${user.id}&name=${user.name}&picture=${
-        user.picture || ''
-      }&isDefaultPicture=${user.isDefaultPicture || 0}`;
+      const queryUserInfo = `${query}&page=user-info&&id=${user.id}&name=${user.name}&picture=${user.picture || ''}`;
       const iframe = createFrame({ host: BASE_URL, query: queryUserInfo, height: '100%', margin: '0' });
       this.node.appendChild(iframe);
       this.iframe = iframe;
@@ -265,58 +264,55 @@ function createInstance(config: typeof window.remark_config) {
     },
   };
 
-  function receiveMessages(event: { data?: string }): void {
-    try {
-      const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      if (data.remarkIframeHeight) {
-        iframe.style.height = `${data.remarkIframeHeight}px`;
-      }
+  function receiveMessages(event: MessageEvent): void {
+    const data = parseMessage(event);
 
-      if (data.scrollTo) {
-        window.scrollTo(window.pageXOffset, data.scrollTo + iframe.getBoundingClientRect().top + window.pageYOffset);
-      }
+    if (data.height) {
+      iframe.style.height = `${data.height}px`;
+    }
 
-      if (Object.prototype.hasOwnProperty.call(data, 'isUserInfoShown')) {
-        if (data.isUserInfoShown) {
-          userInfo.init(data.user || {});
-        } else {
-          userInfo.close();
-        }
-      }
+    if (data.scrollTo) {
+      window.scrollTo(window.pageXOffset, data.scrollTo + iframe.getBoundingClientRect().top + window.pageYOffset);
+    }
 
-      if (data.inited) {
-        postHashToIframe();
-        postTitleToIframe(document.title);
+    if (typeof data.profile === 'object') {
+      if (data.profile === null) {
+        userInfo.close();
+      } else {
+        userInfo.init(data.profile);
       }
-    } catch (e) {}
+    }
+
+    if (data.inited) {
+      postHashToIframe();
+      postTitleToIframe(document.title);
+    }
   }
 
-  function postHashToIframe(e?: Event & { newURL: string }) {
-    const hash = e ? `#${e.newURL.split('#')[1]}` : window.location.hash;
+  function postHashToIframe(evt?: Event & { newURL: string }) {
+    const hash = evt ? `#${evt.newURL.split('#')[1]}` : window.location.hash;
 
-    if (hash.indexOf(`#${COMMENT_NODE_CLASSNAME_PREFIX}`) === 0) {
-      if (e) e.preventDefault();
-
-      iframe.contentWindow!.postMessage(JSON.stringify({ hash }), '*');
+    if (!hash.startsWith(`#${COMMENT_NODE_CLASSNAME_PREFIX}`)) {
+      return;
     }
+
+    evt?.preventDefault();
+    postMessageToIframe(iframe, { hash });
   }
 
   function postTitleToIframe(title: string) {
-    if (iframe.contentWindow) {
-      iframe.contentWindow.postMessage(JSON.stringify({ title }), '*');
-    }
+    postMessageToIframe(iframe, { title });
   }
 
-  function postClickOutsideToIframe(e: MouseEvent) {
-    if (iframe.contentWindow && !iframe.contains(e.target as Node)) {
-      iframe.contentWindow.postMessage(JSON.stringify({ clickOutside: true }), '*');
+  function postClickOutsideToIframe(evt: MouseEvent) {
+    if (iframe.contains(evt.target as Node)) {
+      return;
     }
+    postMessageToIframe(iframe, { clickOutside: true });
   }
 
   function changeTheme(theme: Theme) {
-    if (iframe.contentWindow) {
-      iframe.contentWindow.postMessage(JSON.stringify({ theme }), '*');
-    }
+    postMessageToIframe(iframe, { theme });
   }
 
   function destroy() {

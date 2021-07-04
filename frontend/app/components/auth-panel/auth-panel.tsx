@@ -6,16 +6,15 @@ import b from 'bem-react-helper';
 import { User, Sorting, Theme, PostInfo } from 'common/types';
 import { IS_STORAGE_AVAILABLE, IS_THIRD_PARTY } from 'common/constants';
 import { requestDeletion } from 'utils/email';
-import postMessage from 'utils/postMessage';
+import { postMessageToParent } from 'utils/postMessage';
 import { getHandleClickProps } from 'common/accessibility';
 import { StoreState } from 'store';
 import { Dropdown, DropdownItem } from 'components/dropdown';
 import { Button } from 'components/button';
-import Auth from 'components/auth';
+import { Auth } from 'components/auth';
+import { useTheme } from 'hooks/useTheme';
 
-import useTheme from 'hooks/useTheme';
-
-export interface OwnProps {
+interface OwnProps {
   user: User | null;
   hiddenUsers: StoreState['hiddenUsers'];
   isCommentsDisabled: boolean;
@@ -40,7 +39,7 @@ interface State {
   sortSelectFocused: boolean;
 }
 
-export class AuthPanel extends Component<Props, State> {
+class AuthPanelComponent extends Component<Props, State> {
   state = {
     isBlockedVisible: false,
     anonymousUsernameInputValue: 'anon',
@@ -76,9 +75,11 @@ export class AuthPanel extends Component<Props, State> {
   toggleUserInfoVisibility = () => {
     const { user } = this.props;
 
-    if (window.parent && user) {
-      postMessage({ isUserInfoShown: true, user });
+    if (!user) {
+      return;
     }
+
+    postMessageToParent({ profile: user });
   };
 
   renderAuthorized = (user: User) => {
@@ -197,7 +198,7 @@ export class AuthPanel extends Component<Props, State> {
             onBlur={this.onSortBlur}
           >
             {sortArray.map((sort) => (
-              <option value={sort.value} selected={sort.selected}>
+              <option key={sort.value} value={sort.value} selected={sort.selected}>
                 {sort.label}
               </option>
             ))}
@@ -319,10 +320,10 @@ function getSortArray(currentSort: Sorting, intl: IntlShape) {
   });
 }
 
-export default function AuthPanelConnected(props: OwnProps) {
+export function AuthPanel(props: OwnProps) {
   const intl = useIntl();
   const theme = useTheme();
   const sort = useSelector<StoreState, Sorting>((state) => state.comments.sort);
 
-  return <AuthPanel intl={intl} theme={theme} sort={sort} {...props} />;
+  return <AuthPanelComponent intl={intl} theme={theme} sort={sort} {...props} />;
 }

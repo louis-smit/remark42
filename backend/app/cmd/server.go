@@ -49,6 +49,7 @@ type ServerCommand struct {
 	Admin      AdminGroup      `group:"admin" namespace:"admin" env-namespace:"ADMIN"`
 	Notify     NotifyGroup     `group:"notify" namespace:"notify" env-namespace:"NOTIFY"`
 	SMTP       SMTPGroup       `group:"smtp" namespace:"smtp" env-namespace:"SMTP"`
+	Telegram   TelegramGroup   `group:"telegram" namespace:"telegram" env-namespace:"TELEGRAM"`
 	Image      ImageGroup      `group:"image" namespace:"image" env-namespace:"IMAGE"`
 	SSL        SSLGroup        `group:"ssl" namespace:"ssl" env-namespace:"SSL"`
 	ImageProxy ImageProxyGroup `group:"image-proxy" namespace:"image-proxy" env-namespace:"IMAGE_PROXY"`
@@ -68,7 +69,9 @@ type ServerCommand struct {
 	PositiveScore    bool          `long:"positive-score" env:"POSITIVE_SCORE" description:"enable positive score only"`
 	ReadOnlyAge      int           `long:"read-age" env:"READONLY_AGE" default:"0" description:"read-only age of comments, days"`
 	EditDuration     time.Duration `long:"edit-time" env:"EDIT_TIME" default:"5m" description:"edit window"`
+	AdminEdit        bool          `long:"admin-edit" env:"ADMIN_EDIT" description:"unlimited edit for admins"`
 	Port             int           `long:"port" env:"REMARK_PORT" default:"8080" description:"port"`
+	Address          string        `long:"address" env:"REMARK_ADDRESS" default:"" description:"listening address"`
 	WebRoot          string        `long:"web-root" env:"REMARK_WEB_ROOT" default:"./web" description:"web root directory"`
 	UpdateLimit      float64       `long:"update-limit" env:"UPDATE_LIMIT" default:"0.5" description:"updates/sec limit"`
 	RestrictedWords  []string      `long:"restricted-words" env:"RESTRICTED_WORDS" description:"words prohibited to use in comments" env-delim:","`
@@ -106,11 +109,14 @@ type ServerCommand struct {
 			SMTPUserName string        `long:"user" env:"USER" description:"[deprecated, use --smtp.username] enable TLS"`
 			TLS          bool          `long:"tls" env:"TLS" description:"[deprecated, use --smtp.tls] SMTP TCP connection timeout"`
 			TimeOut      time.Duration `long:"timeout" env:"TIMEOUT" default:"10s" description:"[deprecated, use --smtp.timeout] SMTP TCP connection timeout"`
-			MsgTemplate  string        `long:"template" env:"TEMPLATE" description:"[deprecated, message template file]" default:"email_confirmation_login.html.tmpl"`
+			MsgTemplate  string        `long:"template" env:"TEMPLATE" description:"[deprecated] message template file" default:"email_confirmation_login.html.tmpl"`
 		} `group:"email" namespace:"email" env-namespace:"EMAIL"`
 	} `group:"auth" namespace:"auth" env-namespace:"AUTH"`
 
 	CommonOpts
+
+	emailMsgTemplatePath          string // used only in tests
+	emailVerificationTemplatePath string // used only in tests
 }
 
 // ImageProxyGroup defines options group for image proxy
@@ -186,6 +192,12 @@ type AdminGroup struct {
 	RPC RPCGroup `group:"rpc" namespace:"rpc" env-namespace:"RPC"`
 }
 
+// TelegramGroup defines token for Telegram used in notify and auth modules
+type TelegramGroup struct {
+	Token   string        `long:"token" env:"TOKEN" description:"telegram token (used for auth and telegram notifications)"`
+	Timeout time.Duration `long:"timeout" env:"TIMEOUT" default:"5s" description:"telegram timeout"`
+}
+
 // SMTPGroup defines options for SMTP server connection, used in auth and notify modules
 type SMTPGroup struct {
 	Host     string        `long:"host" env:"HOST" description:"SMTP host"`
@@ -198,18 +210,20 @@ type SMTPGroup struct {
 
 // NotifyGroup defines options for notification
 type NotifyGroup struct {
-	Type      []string `long:"type" env:"TYPE" description:"type of notification" choice:"none" choice:"telegram" choice:"email" choice:"slack" default:"none" env-delim:","` //nolint
+	Type      []string `long:"type" env:"TYPE" description:"[deprecated, use user and admin types instead] types of notifications" choice:"none" choice:"telegram" choice:"email" choice:"slack" default:"none" env-delim:","` //nolint
+	Users     []string `long:"users" env:"USERS" description:"types of user notifications" choice:"none" choice:"email" choice:"telegram" default:"none" env-delim:","`                                                        //nolint
+	Admins    []string `long:"admins" env:"ADMINS" description:"types of admin notifications" choice:"none" choice:"telegram" choice:"email" choice:"slack" default:"none" env-delim:","`                                      //nolint
 	QueueSize int      `long:"queue" env:"QUEUE" description:"size of notification queue" default:"100"`
 	Telegram  struct {
-		Token   string        `long:"token" env:"TOKEN" description:"telegram token"`
-		Channel string        `long:"chan" env:"CHAN" description:"telegram channel"`
-		Timeout time.Duration `long:"timeout" env:"TIMEOUT" default:"5s" description:"telegram timeout"`
-		API     string        `long:"api" env:"API" default:"https://api.telegram.org/bot" description:"telegram api prefix"`
+		Channel string        `long:"chan" env:"CHAN" description:"telegram channel for admin notifications"`
+		API     string        `long:"api" env:"API" default:"https://api.telegram.org/bot" description:"[deprecated, not used] telegram api prefix"`
+		Token   string        `long:"token" env:"TOKEN" description:"[deprecated, use --telegram.token] telegram token"`
+		Timeout time.Duration `long:"timeout" env:"TIMEOUT" default:"5s" description:"[deprecated, use --telegram.timeout] telegram timeout"`
 	} `group:"telegram" namespace:"telegram" env-namespace:"TELEGRAM"`
 	Email struct {
 		From                string `long:"from_address" env:"FROM" description:"from email address"`
 		VerificationSubject string `long:"verification_subj" env:"VERIFICATION_SUBJ" description:"verification message subject"`
-		AdminNotifications  bool   `long:"notify_admin" env:"ADMIN" description:"notify admin on new comments via ADMIN_SHARED_EMAIL"`
+		AdminNotifications  bool   `long:"notify_admin" env:"ADMIN" description:"[deprecated, use --notify.admins=email] notify admin on new comments via ADMIN_SHARED_EMAIL"`
 	} `group:"email" namespace:"email" env-namespace:"EMAIL"`
 	Slack struct {
 		Token   string `long:"token" env:"TOKEN" description:"slack token"`
@@ -261,8 +275,19 @@ type serverApp struct {
 
 // Execute is the entry point for "server" command, called by flag parser
 func (s *ServerCommand) Execute(_ []string) error {
-	log.Printf("[INFO] start server on port %d", s.Port)
-	resetEnv("SECRET", "AUTH_GOOGLE_CSEC", "AUTH_GITHUB_CSEC", "AUTH_FACEBOOK_CSEC", "AUTH_YANDEX_CSEC", "ADMIN_PASSWD")
+	log.Printf("[INFO] start server on port %s:%d", s.Address, s.Port)
+	resetEnv(
+		"SECRET",
+		"AUTH_GOOGLE_CSEC",
+		"AUTH_GITHUB_CSEC",
+		"AUTH_FACEBOOK_CSEC",
+		"AUTH_MICROSOFT_CSEC",
+		"AUTH_TWITTER_CSEC",
+		"AUTH_YANDEX_CSEC",
+		"TELEGRAM_TOKEN",
+		"SMTP_PASSWORD",
+		"ADMIN_PASSWD",
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { // catch signal and invoke graceful termination
@@ -288,39 +313,78 @@ func (s *ServerCommand) Execute(_ []string) error {
 
 // HandleDeprecatedFlags sets new flags from deprecated returns their list
 func (s *ServerCommand) HandleDeprecatedFlags() (result []DeprecatedFlag) {
-	// 1.5.0
 	if s.Auth.Email.Host != "" && s.SMTP.Host == "" {
 		s.SMTP.Host = s.Auth.Email.Host
-		result = append(result, DeprecatedFlag{Old: "auth.email.host", New: "smtp.host", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.host", New: "smtp.host", Version: "1.5"})
 	}
 	if s.Auth.Email.Port != 0 && s.SMTP.Port == 0 {
 		s.SMTP.Port = s.Auth.Email.Port
-		result = append(result, DeprecatedFlag{Old: "auth.email.port", New: "smtp.port", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.port", New: "smtp.port", Version: "1.5"})
 	}
 	if s.Auth.Email.TLS && !s.SMTP.TLS {
 		s.SMTP.TLS = s.Auth.Email.TLS
-		result = append(result, DeprecatedFlag{Old: "auth.email.tls", New: "smtp.tls", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.tls", New: "smtp.tls", Version: "1.5"})
 	}
 	if s.Auth.Email.SMTPUserName != "" && s.SMTP.Username == "" {
 		s.SMTP.Username = s.Auth.Email.SMTPUserName
-		result = append(result, DeprecatedFlag{Old: "auth.email.user", New: "smtp.username", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.user", New: "smtp.username", Version: "1.5"})
 	}
 	if s.Auth.Email.SMTPPassword != "" && s.SMTP.Password == "" {
 		s.SMTP.Password = s.Auth.Email.SMTPPassword
-		result = append(result, DeprecatedFlag{Old: "auth.email.passwd", New: "smtp.password", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.passwd", New: "smtp.password", Version: "1.5"})
 	}
 	if s.Auth.Email.TimeOut != 10*time.Second && s.SMTP.TimeOut == 10*time.Second {
 		s.SMTP.TimeOut = s.Auth.Email.TimeOut
-		result = append(result, DeprecatedFlag{Old: "auth.email.timeout", New: "smtp.timeout", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.timeout", New: "smtp.timeout", Version: "1.5"})
 	}
 	if s.Auth.Email.MsgTemplate != "email_confirmation_login.html.tmpl" {
-		result = append(result, DeprecatedFlag{Old: "auth.email.template", RemoveVersion: "1.9.0"})
+		result = append(result, DeprecatedFlag{Old: "auth.email.template", Version: "1.5"})
 	}
 	if s.LegacyImageProxy && !s.ImageProxy.HTTP2HTTPS {
 		s.ImageProxy.HTTP2HTTPS = s.LegacyImageProxy
-		result = append(result, DeprecatedFlag{Old: "img-proxy", New: "image-proxy.http2https", RemoveVersion: "1.7.0"})
+		result = append(result, DeprecatedFlag{Old: "img-proxy", New: "image-proxy.http2https", Version: "1.5"})
+	}
+	if len(s.Notify.Type) != 0 && (len(s.Notify.Users) != 0 || len(s.Notify.Admins) != 0) {
+		s.handleDeprecatedNotifications()
+		result = append(result, DeprecatedFlag{Old: "notify.type", New: "notify.(users|admins)", Version: "1.9"})
+	}
+	if s.Notify.Email.AdminNotifications && !contains("email", s.Notify.Admins) {
+		s.Notify.Admins = append(s.Notify.Admins, "email")
+		result = append(result, DeprecatedFlag{Old: "notify.email.notify_admin", New: "notify.admins=email", Version: "1.9"})
+	}
+	if s.Notify.Telegram.Token != "" && s.Telegram.Token == "" {
+		s.Telegram.Token = s.Notify.Telegram.Token
+		result = append(result, DeprecatedFlag{Old: "notify.telegram.token", New: "telegram.token", Version: "1.9"})
+	}
+	const telegramDefaultDuration = time.Second * 5
+	if s.Notify.Telegram.Timeout != telegramDefaultDuration && s.Telegram.Timeout == telegramDefaultDuration {
+		s.Telegram.Token = s.Notify.Telegram.Token
+		result = append(result, DeprecatedFlag{Old: "notify.telegram.timeout", New: "telegram.timeout", Version: "1.9"})
+	}
+	if s.Notify.Telegram.API != "https://api.telegram.org/bot" {
+		result = append(result, DeprecatedFlag{Old: "notify.telegram.api", Version: "1.9"})
 	}
 	return result
+}
+
+func (s *ServerCommand) handleDeprecatedNotifications() {
+	for _, t := range s.Notify.Type {
+		if t == "email" && !contains(t, s.Notify.Users) {
+			s.Notify.Users = append(s.Notify.Users, t)
+		}
+		if (t == "telegram" || t == "slack") && !contains(t, s.Notify.Admins) {
+			s.Notify.Admins = append(s.Notify.Admins, t)
+		}
+	}
+}
+
+func contains(s string, a []string) bool {
+	for _, t := range a {
+		if t == s {
+			return true
+		}
+	}
+	return false
 }
 
 // newServerApp prepares application and return it with all active parts
@@ -355,6 +419,7 @@ func (s *ServerCommand) newServerApp() (*serverApp, error) {
 	dataService := &service.DataStore{
 		Engine:                 storeEngine,
 		EditDuration:           s.EditDuration,
+		AdminEdits:             s.AdminEdit,
 		AdminStore:             adminStore,
 		MaxCommentSize:         s.MaxCommentSize,
 		MaxVotes:               s.MaxVotes,
@@ -397,19 +462,22 @@ func (s *ServerCommand) newServerApp() (*serverApp, error) {
 	}
 
 	var emailNotifications bool
-	notifyService, err := s.makeNotify(dataService, authenticator)
+	notifyService, telegramBotUsername, err := s.makeNotify(dataService, authenticator)
 
-	for _, t := range s.Notify.Type {
-		switch t {
-		case "email":
-			emailNotifications = true
-		}
+	if contains("email", s.Notify.Users) {
+		emailNotifications = true
+	}
+
+	// we pass telegramBotUsername to Rest server only if user notifications are enabled
+	if !contains("telegram", s.Notify.Users) {
+		telegramBotUsername = ""
 	}
 
 	if err != nil {
 		log.Printf("[WARN] failed to make notify service, %s", err)
 		notifyService = notify.NopService // disable notifier
 		emailNotifications = false        // email notifications are not available in this case
+		telegramBotUsername = ""          // telegram notifications are not available in this case either
 	}
 
 	imgProxy := &proxy.Image{
@@ -432,28 +500,29 @@ func (s *ServerCommand) newServerApp() (*serverApp, error) {
 	}
 
 	srv := &api.Rest{
-		Version:            s.Revision,
-		DataService:        dataService,
-		WebRoot:            s.WebRoot,
-		RemarkURL:          s.RemarkURL,
-		ImageProxy:         imgProxy,
-		CommentFormatter:   commentFormatter,
-		Migrator:           migr,
-		ReadOnlyAge:        s.ReadOnlyAge,
-		SharedSecret:       s.SharedSecret,
-		Authenticator:      authenticator,
-		Cache:              loadingCache,
-		NotifyService:      notifyService,
-		SSLConfig:          sslConfig,
-		UpdateLimiter:      s.UpdateLimit,
-		ImageService:       imageService,
-		EmailNotifications: emailNotifications,
-		EmojiEnabled:       s.EnableEmoji,
-		AnonVote:           s.AnonymousVote && s.RestrictVoteIP,
-		SimpleView:         s.SimpleView,
-		ProxyCORS:          s.ProxyCORS,
-		AllowedAncestors:   s.AllowedHosts,
-		SendJWTHeader:      s.Auth.SendJWTHeader,
+		Version:             s.Revision,
+		DataService:         dataService,
+		WebRoot:             s.WebRoot,
+		RemarkURL:           s.RemarkURL,
+		ImageProxy:          imgProxy,
+		CommentFormatter:    commentFormatter,
+		Migrator:            migr,
+		ReadOnlyAge:         s.ReadOnlyAge,
+		SharedSecret:        s.SharedSecret,
+		Authenticator:       authenticator,
+		Cache:               loadingCache,
+		NotifyService:       notifyService,
+		SSLConfig:           sslConfig,
+		UpdateLimiter:       s.UpdateLimit,
+		ImageService:        imageService,
+		EmailNotifications:  emailNotifications,
+		TelegramBotUsername: telegramBotUsername,
+		EmojiEnabled:        s.EnableEmoji,
+		AnonVote:            s.AnonymousVote && s.RestrictVoteIP,
+		SimpleView:          s.SimpleView,
+		ProxyCORS:           s.ProxyCORS,
+		AllowedAncestors:    s.AllowedHosts,
+		SendJWTHeader:       s.Auth.SendJWTHeader,
 	}
 
 	srv.ScoreThresholds.Low, srv.ScoreThresholds.Critical = s.LowScore, s.CriticalScore
@@ -509,7 +578,7 @@ func (a *serverApp) run(ctx context.Context) error {
 
 	go a.imageService.Cleanup(ctx) // pictures cleanup for staging images
 
-	a.restSrv.Run(a.Port)
+	a.restSrv.Run(a.Address, a.Port)
 
 	// shutdown procedures after HTTP server is stopped
 	if a.devAuth != nil {
@@ -806,76 +875,89 @@ func (s *ServerCommand) loadEmailTemplate() (string, error) {
 	return string(file), nil
 }
 
-func (s *ServerCommand) makeNotify(dataStore *service.DataStore, authenticator *auth.Service) (*notify.Service, error) {
-	var notifyService *notify.Service
+// aside from notify.Service and error, returns telegram bot name which will be passed to the frontend
+func (s *ServerCommand) makeNotify(dataStore *service.DataStore, authenticator *auth.Service) (*notify.Service, string, error) {
+	notifyService := notify.NopService
 	var destinations []notify.Destination
-	for _, t := range s.Notify.Type {
-		switch t {
-		case "slack":
-			slack, err := notify.NewSlack(s.Notify.Slack.Token, s.Notify.Slack.Channel)
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to create slack notification destination")
-			}
-			destinations = append(destinations, slack)
-		case "telegram":
-			tg, err := notify.NewTelegram(s.Notify.Telegram.Token, s.Notify.Telegram.Channel,
-				s.Notify.Telegram.Timeout, s.Notify.Telegram.API)
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to create telegram notification destination")
-			}
-			destinations = append(destinations, tg)
-		case "email":
-			emailParams := notify.EmailParams{
-				From:                s.Notify.Email.From,
-				VerificationSubject: s.Notify.Email.VerificationSubject,
-				UnsubscribeURL:      s.RemarkURL + "/email/unsubscribe.html",
-				// TODO: uncomment after #560 frontend part is ready and URL is known
-				// SubscribeURL:        s.RemarkURL + "/subscribe.html?token=",
-				TokenGenFn: func(userID, email, site string) (string, error) {
-					claims := token.Claims{
-						Handshake: &token.Handshake{ID: userID + "::" + email},
-						StandardClaims: jwt.StandardClaims{
-							Audience:  site,
-							ExpiresAt: time.Now().Add(100 * 365 * 24 * time.Hour).Unix(),
-							NotBefore: time.Now().Add(-1 * time.Minute).Unix(),
-							Issuer:    "remark42",
-						},
-					}
-					tkn, err := authenticator.TokenService().Token(claims)
-					if err != nil {
-						return "", errors.Wrapf(err, "failed to make unsubscription token")
-					}
-					return tkn, nil
-				},
-			}
-			if s.Notify.Email.AdminNotifications {
-				emailParams.AdminEmails = s.Admin.Shared.Email
-			}
-			smtpParams := notify.SMTPParams{
-				Host:     s.SMTP.Host,
-				Port:     s.SMTP.Port,
-				TLS:      s.SMTP.TLS,
-				Username: s.SMTP.Username,
-				Password: s.SMTP.Password,
-				TimeOut:  s.SMTP.TimeOut,
-			}
-			emailService, err := notify.NewEmail(emailParams, smtpParams)
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to create email notification destination")
-			}
-			destinations = append(destinations, emailService)
-		case "none":
-			notifyService = notify.NopService
-		default:
-			return nil, errors.Errorf("unsupported notification type %q", s.Notify.Type)
+	var telegramBotUsername string
+
+	if contains("slack", s.Notify.Admins) {
+		slack, err := notify.NewSlack(s.Notify.Slack.Token, s.Notify.Slack.Channel)
+		if err != nil {
+			return nil, "", errors.Wrap(err, "failed to create slack notification destination")
 		}
+		destinations = append(destinations, slack)
+	}
+
+	if contains("telegram", s.Notify.Users) || contains("telegram", s.Notify.Admins) {
+		if contains("telegram", s.Notify.Admins) && s.Notify.Telegram.Channel == "" {
+			return nil, "", errors.New("--notify.telegram.channel must be set for admin notifications to work")
+		}
+		telegramParams := notify.TelegramParams{
+			AdminChannelID:    s.Notify.Telegram.Channel,
+			UserNotifications: contains("telegram", s.Notify.Users),
+			Token:             s.Telegram.Token,
+			Timeout:           s.Telegram.Timeout,
+		}
+		tg, err := notify.NewTelegram(telegramParams)
+		if err != nil {
+			return nil, "", errors.Wrap(err, "failed to create telegram notification destination")
+		}
+		destinations = append(destinations, tg)
+		telegramBotUsername = tg.BotUsername
+	}
+
+	// with logic below admin notifications enable notifications for users on the backend even if they
+	// are not enabled explicitly, however they won't be visible to the users in the frontend
+	// because api.Rest.EmailNotifications would be set to false.
+	if contains("email", s.Notify.Users) || contains("email", s.Notify.Admins) {
+		emailParams := notify.EmailParams{
+			MsgTemplatePath:          s.emailMsgTemplatePath,
+			VerificationTemplatePath: s.emailVerificationTemplatePath, From: s.Notify.Email.From,
+			VerificationSubject: s.Notify.Email.VerificationSubject,
+			UnsubscribeURL:      s.RemarkURL + "/email/unsubscribe.html",
+			// TODO: uncomment after #560 frontend part is ready and URL is known
+			// SubscribeURL:        s.RemarkURL + "/subscribe.html?token=",
+			TokenGenFn: func(userID, email, site string) (string, error) {
+				claims := token.Claims{
+					Handshake: &token.Handshake{ID: userID + "::" + email},
+					StandardClaims: jwt.StandardClaims{
+						Audience:  site,
+						ExpiresAt: time.Now().Add(100 * 365 * 24 * time.Hour).Unix(),
+						NotBefore: time.Now().Add(-1 * time.Minute).Unix(),
+						Issuer:    "remark42",
+					},
+				}
+				tkn, err := authenticator.TokenService().Token(claims)
+				if err != nil {
+					return "", errors.Wrapf(err, "failed to make unsubscription token")
+				}
+				return tkn, nil
+			},
+		}
+		if contains("email", s.Notify.Admins) {
+			emailParams.AdminEmails = s.Admin.Shared.Email
+		}
+		smtpParams := notify.SMTPParams{
+			Host:     s.SMTP.Host,
+			Port:     s.SMTP.Port,
+			TLS:      s.SMTP.TLS,
+			Username: s.SMTP.Username,
+			Password: s.SMTP.Password,
+			TimeOut:  s.SMTP.TimeOut,
+		}
+		emailService, err := notify.NewEmail(emailParams, smtpParams)
+		if err != nil {
+			return nil, "", errors.Wrap(err, "failed to create email notification destination")
+		}
+		destinations = append(destinations, emailService)
 	}
 
 	if len(destinations) > 0 {
-		log.Printf("[INFO] make notify, types=%s", s.Notify.Type)
+		log.Printf("[INFO] make notify, for users: %s, for admins: %s", s.Notify.Users, s.Notify.Admins)
 		notifyService = notify.NewService(dataStore, s.Notify.QueueSize, destinations...)
 	}
-	return notifyService, nil
+	return notifyService, telegramBotUsername, nil
 }
 
 func (s *ServerCommand) makeSSLConfig() (config api.SSLConfig, err error) {
@@ -932,8 +1014,9 @@ func (s *ServerCommand) makeAuthenticator(ds *service.DataStore, avas avatar.Sto
 				log.Printf("[WARN] can't read email for %s, %v", c.User.ID, err)
 			}
 
-			// don't allow anonymous and email with admin's name
-			if strings.HasPrefix(c.User.ID, "anonymous_") || strings.HasPrefix(c.User.ID, "email_") {
+			// don't allow anonymous and email with admins names
+			// exclude admin from impersonation detection over email, it prevents a valid admin to login with RestrictedNames
+			if strings.HasPrefix(c.User.ID, "anonymous_") || (strings.HasPrefix(c.User.ID, "email_") && !c.User.IsAdmin()) {
 				for _, a := range s.RestrictedNames {
 					if strings.EqualFold(strings.TrimSpace(c.User.Name), a) {
 						c.User.SetBoolAttr("blocked", true)

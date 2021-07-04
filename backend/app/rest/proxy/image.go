@@ -153,12 +153,13 @@ func (p Image) downloadImage(ctx context.Context, imgURL string) ([]byte, error)
 		if e != nil {
 			return errors.Wrapf(e, "failed to make request for %s", imgURL)
 		}
-		resp, e = client.Do(req.WithContext(ctx))
+		resp, e = client.Do(req.WithContext(ctx)) //nolint:bodyclose // need a refactor to fix that
 		return e
 	})
 	if err != nil {
 		return nil, errors.Wrapf(err, "can't download image %s", imgURL)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, errors.Errorf("got unsuccessful response status %d while fetching %s", resp.StatusCode, imgURL)

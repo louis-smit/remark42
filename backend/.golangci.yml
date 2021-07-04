@@ -34,6 +34,7 @@ linters-settings:
 
 linters:
   enable:
+    - bodyclose
     - megacheck
     - golint
     - govet
@@ -52,7 +53,7 @@ linters:
     - varcheck
     - stylecheck
     - gochecknoinits
-    - scopelint
+    - exportloopref
     - gocritic
     - nakedret
     - gosimple
@@ -75,4 +76,4 @@ issues:
   exclude-use-default: false
 
 service:
-  golangci-lint-version: 1.31.x
+  golangci-lint-version: 1.39.x

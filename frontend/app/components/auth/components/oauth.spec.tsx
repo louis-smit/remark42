@@ -1,17 +1,20 @@
 import { h } from 'preact';
 import { fireEvent, render, waitFor } from '@testing-library/preact';
 
+import type { User } from 'common/types';
 import * as userActions from 'store/user/actions';
+import { BASE_URL } from 'common/constants.config';
 
-import OAuth from './oauth';
+import { OAuth } from './oauth';
 import * as api from './oauth.api';
-import { User } from 'common/types';
 
 jest.mock('react-redux', () => ({
   useDispatch: () => jest.fn(),
 }));
 
-jest.mock('hooks/useTheme', () => () => 'light');
+jest.mock('hooks/useTheme', () => ({
+  useTheme: () => 'light',
+}));
 
 describe('<OAuth />', () => {
   it('should have permanent class name', () => {
@@ -27,7 +30,7 @@ describe('<OAuth />', () => {
     const { container } = render(<OAuth providers={['google']} />);
 
     expect(container.querySelector('a')?.getAttribute('href')).toBe(
-      '/auth/google/login?from=http%3A%2F%2Flocalhost%2F%3FselfClose&site=remark'
+      `${BASE_URL}/auth/google/login?from=http%3A%2F%2Flocalhost%2F%3FselfClose&site=remark`
     );
   });
 
@@ -40,7 +43,7 @@ describe('<OAuth />', () => {
 
     await waitFor(() =>
       expect(oauthSignin).toBeCalledWith(
-        'http://localhost/auth/google/login?from=http%3A%2F%2Flocalhost%2F%3FselfClose&site=remark'
+        `${BASE_URL}/auth/google/login?from=http%3A%2F%2Flocalhost%2F%3FselfClose&site=remark`
       )
     );
     expect(setUser).toBeCalledTimes(0);
@@ -55,7 +58,7 @@ describe('<OAuth />', () => {
 
     await waitFor(() =>
       expect(oauthSignin).toBeCalledWith(
-        'http://localhost/auth/google/login?from=http%3A%2F%2Flocalhost%2F%3FselfClose&site=remark'
+        `${BASE_URL}/auth/google/login?from=http%3A%2F%2Flocalhost%2F%3FselfClose&site=remark`
       )
     );
     expect(setUser).toBeCalledWith({});

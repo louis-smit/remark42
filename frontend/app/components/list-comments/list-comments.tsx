@@ -1,21 +1,21 @@
-import { h, FunctionComponent } from 'preact';
+import { h } from 'preact';
 import { useIntl } from 'react-intl';
-import classnames from 'classnames';
+import clsx from 'clsx';
 
 import type { Comment as CommentType } from 'common/types';
-import Comment from 'components/comment';
+import { Comment } from 'components/comment';
 
 import styles from './list-comments.module.css';
 
-export type ListCommentsProps = {
+type Props = {
   comments: CommentType[];
 };
 
-const ListComments: FunctionComponent<ListCommentsProps> = ({ comments = [] }) => {
+export function ListComments({ comments = [] }: Props) {
   const intl = useIntl();
 
   return (
-    <div className={classnames('comments-list', styles.root)}>
+    <div className={clsx('comments-list', styles.root)}>
       {comments.map((comment) => (
         <Comment
           intl={intl}
@@ -33,6 +33,4 @@ const ListComments: FunctionComponent<ListCommentsProps> = ({ comments = [] }) =
       ))}
     </div>
   );
-};
-
-export default ListComments;
+}

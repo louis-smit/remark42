@@ -45,6 +45,7 @@ func TestServerApp(t *testing.T) {
 
 	// add comment
 	client := http.Client{Timeout: 10 * time.Second}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/api/v1/comment", port),
 		strings.NewReader(`{"text": "test 123", "locator":{"url": "https://radio-t.com/blah1", "site": "remark"}}`))
 	require.NoError(t, err)
@@ -76,8 +77,9 @@ func TestServerApp_DevMode(t *testing.T) {
 	go func() { _ = app.run(ctx) }()
 	waitForHTTPServerStart(port)
 
-	require.Equal(t, 5+1, len(app.restSrv.Authenticator.Providers()), "extra auth provider")
-	assert.Equal(t, "dev", app.restSrv.Authenticator.Providers()[4].Name(), "dev auth provider")
+	providers := app.restSrv.Authenticator.Providers()
+	require.Equal(t, 7+1, len(providers), "extra auth provider")
+	assert.Equal(t, "dev", providers[len(providers)-2].Name(), "dev auth provider")
 	// send ping
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/api/v1/ping", port))
 	require.NoError(t, err)
@@ -102,8 +104,9 @@ func TestServerApp_AnonMode(t *testing.T) {
 	go func() { _ = app.run(ctx) }()
 	waitForHTTPServerStart(port)
 
-	require.Equal(t, 5+1, len(app.restSrv.Authenticator.Providers()), "extra auth provider for anon")
-	assert.Equal(t, "anonymous", app.restSrv.Authenticator.Providers()[5].Name(), "anon auth provider")
+	providers := app.restSrv.Authenticator.Providers()
+	require.Equal(t, 7+1, len(providers), "extra auth provider for anon")
+	assert.Equal(t, "anonymous", providers[len(providers)-1].Name(), "anon auth provider")
 
 	// send ping
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/api/v1/ping", port))
@@ -122,12 +125,14 @@ func TestServerApp_AnonMode(t *testing.T) {
 
 	// try to add a comment as good anonymous
 	client := http.Client{Timeout: 10 * time.Second}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/api/v1/comment", port),
 		strings.NewReader(`{"text": "test 123", "locator":{"url": "https://radio-t.com/blah1", "site": "remark"}}`))
 	require.NoError(t, err)
 
 	tkn, claims := getAuthFromCookie(t, app, resp)
 	require.NotEmpty(t, tkn)
+	assert.False(t, claims.User.BoolAttr("blocked"), "should not be blocked")
 	req.Header.Add("X-JWT", tkn)
 	resp, err = client.Do(req)
 	require.NoError(t, err)
@@ -217,7 +222,7 @@ func TestServerApp_WithSSL(t *testing.T) {
 	p := flags.NewParser(&opts, flags.Default)
 	port := chooseRandomUnusedPort()
 	_, err := p.ParseArgs([]string{"--admin-passwd=password", "--port=" + strconv.Itoa(port), "--store.bolt.path=/tmp/xyz", "--backup=/tmp",
-		"--avatar.type=bolt", "--avatar.bolt.file=/tmp/ava-test.db", "--notify.type=none",
+		"--avatar.type=bolt", "--avatar.bolt.file=/tmp/ava-test.db",
 		"--ssl.type=static", "--ssl.cert=testdata/cert.pem", "--ssl.key=testdata/key.pem",
 		"--ssl.port=" + strconv.Itoa(sslPort), "--image.fs.path=/tmp"})
 	require.NoError(t, err)
@@ -387,7 +392,7 @@ func TestServerApp_MainSignal(t *testing.T) {
 	p := flags.NewParser(&s, flags.Default)
 	port := chooseRandomUnusedPort()
 	args := []string{"test", "--store.bolt.path=/tmp/xyz", "--backup=/tmp", "--avatar.type=bolt",
-		"--avatar.bolt.file=/tmp/ava-test.db", "--port=" + strconv.Itoa(port), "--notify.type=none", "--image.fs.path=/tmp"}
+		"--avatar.bolt.file=/tmp/ava-test.db", "--port=" + strconv.Itoa(port), "--image.fs.path=/tmp"}
 	defer os.Remove("/tmp/ava-test.db")
 	_, err := p.ParseArgs(args)
 	require.NoError(t, err)
@@ -424,13 +429,14 @@ func TestServerApp_DeprecatedArgs(t *testing.T) {
 	deprecatedFlags := s.HandleDeprecatedFlags()
 	assert.ElementsMatch(t,
 		[]DeprecatedFlag{
-			{Old: "auth.email.host", New: "smtp.host", RemoveVersion: "1.7.0"},
-			{Old: "auth.email.port", New: "smtp.port", RemoveVersion: "1.7.0"},
-			{Old: "auth.email.tls", New: "smtp.tls", RemoveVersion: "1.7.0"},
-			{Old: "auth.email.user", New: "smtp.username", RemoveVersion: "1.7.0"},
-			{Old: "auth.email.passwd", New: "smtp.password", RemoveVersion: "1.7.0"},
-			{Old: "auth.email.timeout", New: "smtp.timeout", RemoveVersion: "1.7.0"},
-			{Old: "auth.email.template", RemoveVersion: "1.9.0"},
+			{Old: "auth.email.host", New: "smtp.host", Version: "1.5"},
+			{Old: "auth.email.port", New: "smtp.port", Version: "1.5"},
+			{Old: "auth.email.tls", New: "smtp.tls", Version: "1.5"},
+			{Old: "auth.email.user", New: "smtp.username", Version: "1.5"},
+			{Old: "auth.email.passwd", New: "smtp.password", Version: "1.5"},
+			{Old: "auth.email.timeout", New: "smtp.timeout", Version: "1.5"},
+			{Old: "auth.email.template", Version: "1.5"},
+			{Old: "notify.type", New: "notify.(users|admins)", Version: "1.9"},
 		},
 		deprecatedFlags)
 	assert.Equal(t, "smtp.example.org", s.SMTP.Host)
@@ -659,10 +665,14 @@ func prepServerApp(t *testing.T, fn func(o ServerCommand) ServerCommand) (*serve
 	cmd.Auth.Google.CSEC, cmd.Auth.Google.CID = "csec", "cid"
 	cmd.Auth.Facebook.CSEC, cmd.Auth.Facebook.CID = "csec", "cid"
 	cmd.Auth.Yandex.CSEC, cmd.Auth.Yandex.CID = "csec", "cid"
+	cmd.Auth.Microsoft.CSEC, cmd.Auth.Microsoft.CID = "csec", "cid"
+	cmd.Auth.Twitter.CSEC, cmd.Auth.Twitter.CID = "csec", "cid"
+	cmd.Telegram.Token = "token"
 	cmd.Auth.Email.Enable = true
 	cmd.Auth.Email.MsgTemplate = "testdata/email.tmpl"
 	cmd.BackupLocation = "/tmp"
-	cmd.Notify.Type = []string{"email"}
+	cmd.Notify.Users = []string{"email"}
+	cmd.Notify.Admins = []string{"email"}
 	cmd.Notify.Email.From = "from@example.org"
 	cmd.Notify.Email.VerificationSubject = "test verification email subject"
 	cmd.SMTP.Host = "127.0.0.1"
@@ -674,6 +684,8 @@ func prepServerApp(t *testing.T, fn func(o ServerCommand) ServerCommand) (*serve
 	cmd.Admin.Type = "shared"
 	cmd.Admin.Shared.Admins = []string{"id1", "id2"}
 	cmd.RestrictedNames = []string{"umputun", "bobuk"}
+	cmd.emailMsgTemplatePath = "../../templates/email_reply.html.tmpl"
+	cmd.emailVerificationTemplatePath = "../../templates/email_confirmation_subscription.html.tmpl"
 	cmd = fn(cmd)
 
 	os.Remove(cmd.Store.Bolt.Path + "/remark.db")

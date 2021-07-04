@@ -742,6 +742,29 @@ func TestService_EditCommentReplyFailed(t *testing.T) {
 	assert.EqualError(t, err, "parent comment with reply can't be edited, id-1")
 }
 
+func TestService_EditCommentAdmin(t *testing.T) {
+	eng, teardown := prepStoreEngine(t)
+	defer teardown()
+	b := DataStore{Engine: eng, EditDuration: 100 * time.Millisecond,
+		AdminStore: admin.NewStaticKeyStore("secret 123"), AdminEdits: true}
+
+	res, err := b.Last("radio-t", 0, time.Time{}, store.User{})
+	t.Logf("%+v", res[0])
+	assert.NoError(t, err)
+	require.Equal(t, 2, len(res))
+	assert.Nil(t, res[0].Edit)
+
+	time.Sleep(time.Second)
+
+	_, err = b.EditComment(store.Locator{URL: "https://radio-t.com", SiteID: "radio-t"}, res[0].ID,
+		EditRequest{Orig: "yyy", Text: "xxx", Summary: "my edit", Admin: true})
+	assert.NoError(t, err)
+
+	_, err = b.EditComment(store.Locator{URL: "https://radio-t.com", SiteID: "radio-t"}, res[0].ID,
+		EditRequest{Orig: "yyy", Text: "xxx", Summary: "my edit", Admin: false})
+	assert.Error(t, err)
+}
+
 func TestService_ValidateComment(t *testing.T) {
 
 	b := DataStore{MaxCommentSize: 2000, AdminStore: admin.NewStaticKeyStore("secret 123")}
@@ -885,18 +908,29 @@ func TestService_UserDetailsOperations(t *testing.T) {
 	result, err := b.SetUserEmail("radio-t", "u1", "test@example.com")
 	assert.NoError(t, err, "No error inserting entry expected")
 	assert.Equal(t, "test@example.com", result)
+	result, err = b.SetUserTelegram("radio-t", "u1", "test@example.com")
+	assert.NoError(t, err, "No error inserting entry expected")
+	assert.Equal(t, "test@example.com", result)
 
 	// read valid entry back
 	result, err = b.GetUserEmail("radio-t", "u1")
+	assert.NoError(t, err, "No error reading entry expected")
+	assert.Equal(t, "test@example.com", result)
+	result, err = b.GetUserTelegram("radio-t", "u1")
 	assert.NoError(t, err, "No error reading entry expected")
 	assert.Equal(t, "test@example.com", result)
 
 	// delete existing entry
 	err = b.DeleteUserDetail("radio-t", "u1", engine.UserEmail)
 	assert.NoError(t, err, "No error deleting entry expected")
+	err = b.DeleteUserDetail("radio-t", "u1", engine.UserTelegram)
+	assert.NoError(t, err, "No error deleting entry expected")
 
 	// read deleted entry
 	result, err = b.GetUserEmail("radio-t", "u1")
+	assert.NoError(t, err, "No error reading entry expected")
+	assert.Empty(t, result)
+	result, err = b.GetUserTelegram("radio-t", "u1")
 	assert.NoError(t, err, "No error reading entry expected")
 	assert.Empty(t, result)
 
@@ -904,9 +938,15 @@ func TestService_UserDetailsOperations(t *testing.T) {
 	result, err = b.SetUserEmail("bad-site", "u3", "does_not_matter@example.com")
 	assert.Error(t, err, "Site not found")
 	assert.Empty(t, result)
+	result, err = b.SetUserTelegram("bad-site", "u3", "does_not_matter@example.com")
+	assert.Error(t, err, "Site not found")
+	assert.Empty(t, result)
 
 	// read entry with invalid site_id
 	result, err = b.GetUserEmail("bad-site", "u3")
+	assert.Error(t, err, "Site not found")
+	assert.Empty(t, result)
+	result, err = b.GetUserTelegram("bad-site", "u3")
 	assert.Error(t, err, "Site not found")
 	assert.Empty(t, result)
 }
@@ -1319,10 +1359,12 @@ func TestService_submitImages(t *testing.T) {
 	mockStore := image.MockStore{}
 	mockStore.On("Commit", "dev/pic1.png").Once().Return(nil)
 	mockStore.On("Commit", "dev/pic2.png").Once().Return(nil)
+	mockStore.On("ResetCleanupTimer", "dev/pic1.png").Once().Return(nil)
+	mockStore.On("ResetCleanupTimer", "dev/pic2.png").Once().Return(nil)
 	imgSvc := image.NewService(&mockStore,
 		image.ServiceParams{
 			EditDuration: 50 * time.Millisecond,
-			ImageAPI:     "/",
+			ImageAPI:     "/images/dev/",
 			ProxyAPI:     "/non_existent",
 		})
 	defer imgSvc.Close(context.TODO())
@@ -1344,7 +1386,8 @@ func TestService_submitImages(t *testing.T) {
 	assert.NoError(t, err)
 
 	b.submitImages(c)
-	time.Sleep(250 * time.Millisecond)
+	mockStore.AssertNumberOfCalls(t, "ResetCleanupTimer", 2)
+	time.Sleep(b.EditDuration + 100*time.Millisecond)
 	mockStore.AssertNumberOfCalls(t, "Commit", 2)
 }
 
@@ -1361,6 +1404,10 @@ func TestService_ResubmitStagingImages(t *testing.T) {
 	eng, teardown := prepStoreEngine(t)
 	defer teardown()
 	b := DataStore{Engine: eng, EditDuration: 10 * time.Millisecond, ImageService: imgSvc}
+
+	mockStore.On("ResetCleanupTimer", "dev_user/bqf122eq9r8ad657n3ng").Once().Return(nil)
+	mockStore.On("ResetCleanupTimer", "dev_user/bqf321eq9r8ad657n3ng").Once().Return(nil)
+	mockStore.On("ResetCleanupTimer", "cached_images/12318fbd4c55e9d177b8b5ae197bc89c5afd8e07-a41fcb00643f28d700504256ec81cbf2e1aac53e").Once().Return(nil)
 
 	// create comment with three images without preparing it properly
 	comment := store.Comment{
@@ -1385,7 +1432,7 @@ func TestService_ResubmitStagingImages(t *testing.T) {
 	mockStore.On("Commit", "dev_user/bqf122eq9r8ad657n3ng").Once().Return(nil)
 	mockStore.On("Commit", "dev_user/bqf321eq9r8ad657n3ng").Once().Return(nil)
 	mockStore.On("Commit", "cached_images/12318fbd4c55e9d177b8b5ae197bc89c5afd8e07-a41fcb00643f28d700504256ec81cbf2e1aac53e").Once().Return(nil)
-	time.Sleep(time.Millisecond * 100)
+	time.Sleep(b.EditDuration + time.Millisecond*100)
 
 	mockStore.AssertNumberOfCalls(t, "Info", 1)
 	mockStore.AssertNumberOfCalls(t, "Commit", 3)

@@ -8,9 +8,6 @@ debug
 debug.test
 .vscode
 .idea/
-/frontend/node_modules/
-/frontend/public/
-/frontend/coverage
 *.prof
 *.test
 /rest-client.env.json
@@ -24,3 +21,4 @@ compose-private-backend.yml
 compose-private-frontend.yml
 compose-private.yml
 /backend/_example/*/vendor
+http-client.env.json
